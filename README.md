@@ -469,6 +469,99 @@ Please ensure no secrets, API keys, or large binary files are included in PRs.
 
 ---
 
+## 🚀 Deployment
+
+### Local Development (Full RAG Pipeline)
+
+The full pipeline — dense retrieval with `multilingual-e5-small`, local NumPy vector store, and grounded generation — runs locally with:
+
+```bash
+# Activate virtual environment first
+python -m uvicorn backend.api.app:app --host 127.0.0.1 --port 8000
+```
+
+Open: `http://127.0.0.1:8000`
+
+---
+
+### Vercel Deployment
+
+#### Architecture
+
+The project includes a Vercel entry point (`api/index.py`) and routing configuration (`vercel.json`).
+
+```
+vercel.json
+api/
+└── index.py     ← re-exports the FastAPI app to Vercel's Python runtime
+```
+
+#### ⚠️ Critical Deployment Constraint — Model Size
+
+| Asset | Size | Vercel Limit |
+|-------|------|-------------|
+| `intfloat/multilingual-e5-small` | **~470 MB** | **250 MB** |
+| Semantic dense index (`.npy` + `.json`) | ~9.2 MB | OK |
+
+**The embedding model is ~1.9× the Vercel serverless function size limit.**
+
+This means the full dense retrieval pipeline **cannot run on Vercel serverless** as-is.
+
+#### What DOES work on Vercel
+
+| Feature | Works? |
+|---------|--------|
+| Frontend (HTML/CSS/JS) | ✅ |
+| `/health` endpoint | ✅ |
+| `/api/query` with Sarvam AI (remote LLM) | ✅ if model replaced |
+| Dense retrieval with local E5-small | ❌ model too large |
+| BM25 sparse retrieval only | ✅ (no model needed) |
+
+#### Deploying to Vercel (Sarvam mode)
+
+1. Install Vercel CLI: `npm install -g vercel`
+
+2. Set environment variables in Vercel dashboard:
+   - `GENERATION_PROVIDER=sarvam`
+   - `SARVAM_API_KEY=<your key>`
+   - `CHUNK_STRATEGY=semantic`
+   - `MIN_RETRIEVAL_SCORE=0.78`
+
+3. Deploy:
+   ```bash
+   vercel --prod
+   ```
+
+> **Note:** Without the local embedding model, query embedding cannot run. You must either:
+> - Replace `EmbeddingGenerator` with calls to a lightweight remote embedding API
+> - Use a separate backend host for the full pipeline (see below)
+
+#### Recommended Production Architecture
+
+For full dense RAG on production:
+
+```
+User → Vercel (frontend + /health)
+     ↓
+     Vercel calls → Railway/Render backend (FastAPI + model + indexes)
+```
+
+Deploy the FastAPI backend to [Railway](https://railway.app), [Render](https://render.com), or [Fly.io](https://fly.io) — these support large container sizes (2 GB+).
+
+Then set the frontend API base URL via an environment variable to point to that backend.
+
+#### Environment Variables for Production
+
+| Variable | Production Value |
+|----------|----------------|
+| `GENERATION_PROVIDER` | `sarvam` |
+| `SARVAM_API_KEY` | your Sarvam AI key |
+| `CHUNK_STRATEGY` | `semantic` |
+| `MIN_RETRIEVAL_SCORE` | `0.78` |
+| `HF_TOKEN` | optional (for dataset downloads) |
+
+---
+
 ## 📜 License
 
 No license file is currently present in this repository.  

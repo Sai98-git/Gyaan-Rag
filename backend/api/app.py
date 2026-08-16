@@ -1,9 +1,15 @@
 import time
 import logging
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 from fastapi import FastAPI, HTTPException, status
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
+
+# Resolve project root as the directory two levels above this file (backend/api/app.py)
+# Works regardless of the current working directory (important for Vercel)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 from backend.core.config import settings
 from backend.retrieval.embeddings import get_embedding_generator
@@ -34,8 +40,8 @@ def startup_event():
     logger.info("Initializing RAG resources and loading offline indexes...")
     logger.info(f"Active Chunking Strategy: '{settings.CHUNK_STRATEGY}'")
     
-    dense_dir = f"data/indexes/{settings.CHUNK_STRATEGY}/dense"
-    bm25_dir = f"data/indexes/{settings.CHUNK_STRATEGY}/bm25"
+    dense_dir = str(PROJECT_ROOT / "data" / "indexes" / settings.CHUNK_STRATEGY / "dense")
+    bm25_dir  = str(PROJECT_ROOT / "data" / "indexes" / settings.CHUNK_STRATEGY / "bm25")
     
     # Load dense index
     if not vector_store.load(dense_dir):
@@ -173,5 +179,13 @@ def handle_query(payload: QueryRequest):
         guard_reason=guard_reason
     )
 
-# Serve Frontend SPA Static files
-app.mount("/", StaticFiles(directory="frontend", html=True), name="static")
+# ─── Health endpoint ────────────────────────────────────────────────────────
+@app.get("/health", tags=["ops"])
+def health_check():
+    """Simple liveness probe. Returns 200 OK if the server is running."""
+    return JSONResponse({"status": "ok"})
+
+
+# ─── Frontend SPA (must be mounted LAST, after all API routes) ───────────────
+_frontend_dir = str(PROJECT_ROOT / "frontend")
+app.mount("/", StaticFiles(directory=_frontend_dir, html=True), name="static")

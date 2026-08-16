@@ -1,0 +1,38 @@
+{
+  "version": 2,
+  "comment": "Gyaan RAG — Vercel deployment configuration",
+  "builds": [
+    {
+      "comment": "Python/FastAPI backend (api/index.py exposes the FastAPI 'app')",
+      "src": "api/index.py",
+      "use": "@vercel/python",
+      "config": {
+        "maxLambdaSize": "50mb"
+      }
+    }
+  ],
+  "routes": [
+    {
+      "comment": "Health check — direct to Python function",
+      "src": "/health",
+      "dest": "/api/index.py"
+    },
+    {
+      "comment": "All /api/* requests go to the Python FastAPI function",
+      "src": "/api/(.*)",
+      "dest": "/api/index.py"
+    },
+    {
+      "comment": "Frontend static assets — let FastAPI serve them through StaticFiles",
+      "src": "/(.*)",
+      "dest": "/api/index.py"
+    }
+  ],
+  "env": {
+    "GENERATION_PROVIDER": "sarvam",
+    "CHUNK_STRATEGY": "semantic",
+    "RETRIEVAL_TOP_K": "10",
+    "MIN_RETRIEVAL_SCORE": "0.78",
+    "EMBEDDING_MODEL_NAME": "intfloat/multilingual-e5-small"
+  }
+}
