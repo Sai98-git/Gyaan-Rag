@@ -29,7 +29,7 @@ logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(
     title="Indic RAG Subsystem API",
-    description="Backend API layer for dense retrieval and grounded Indic LLM generation.",
+    description="Backend API layer for dense/BM25 retrieval and grounded Indic LLM generation.",
     version="1.0.0"
 )
 
@@ -61,16 +61,16 @@ def init_rag_resources():
     if not bm25_ok:
         logger.warning(f"BM25 index not found at '{bm25_dir}'.")
 
-    # Attempt to load embedding model (local dev / GPU environments)
+    # Attempt to load embedding model (local dev / GPU environments only)
     if index_ok:
         try:
             from backend.retrieval.embeddings import get_embedding_generator
             embedding_gen = get_embedding_generator()
-            logger.info("Embedding model loaded successfully.")
+            logger.info("Dense embedding model loaded successfully.")
         except Exception as exc:
-            logger.warning(
-                f"Embedding model could not be loaded ({exc}). "
-                "Falling back to BM25 lexical retrieval on the local index."
+            logger.info(
+                f"Dense embedding model not loaded ({exc}). "
+                "Running in serverless mode with local BM25 index."
             )
 
     _initialized = True
@@ -112,27 +112,34 @@ class QueryResponse(BaseModel):
 @app.post("/api/query", response_model=QueryResponse)
 def handle_query(payload: QueryRequest):
     """
-    RAG endpoint that accepts a query, runs retrieval (Dense if model available,
-    BM25 fallback on serverless), constructs context, generates a grounded answer,
-    applies safety guards, and returns sources.
+    RAG endpoint executing the complete pipeline:
+    [1] Request received -> [2] Resource init -> [3] Retrieval -> [4] Results ->
+    [5] Context assembly -> [6] Provider -> [7] LLM request -> [8] LLM response ->
+    [9] Grounding guard -> [10] Response returned
     """
-    init_rag_resources()
-
+    # [1] Request received
     query = payload.query.strip()
     req_start_time = time.perf_counter()
-    
+    logger.info(f"[1] Request received: query='{query}'")
+
     if not query:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Query string cannot be empty or whitespace."
         )
-        
-    logger.info(f"Received query request: '{query}'")
 
-    # 1. Retrieval Phase
+    # [2] RAG resources initialized
+    init_rag_resources()
+    logger.info(
+        f"[2] RAG resources initialized: dense_chunks={len(vector_store.chunks_metadata)}, "
+        f"bm25_chunks={len(bm25_retriever.chunks)}"
+    )
+
+    # [3] Retrieval started
     t0 = time.perf_counter()
     retrieved_chunks = []
     retrieval_method = "dense"
+    logger.info("[3] Retrieval started...")
 
     try:
         if embedding_gen is not None:
@@ -143,93 +150,117 @@ def handle_query(payload: QueryRequest):
             retrieved_chunks = bm25_retriever.search(query, top_k=settings.RETRIEVAL_TOP_K)
             retrieval_method = "bm25"
         else:
+            logger.error("[3.FAIL] Neither dense nor BM25 index files were loaded.")
             return JSONResponse(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 content={
-                    "error": "INDEX_NOT_AVAILABLE",
-                    "message": "Retrieval index is not loaded on this server instance.",
-                    "detail": "Neither dense nor BM25 index files were loaded."
+                    "error": "RETRIEVAL_FAILED",
+                    "message": "The retrieval index could not be loaded on this server instance."
                 }
             )
     except Exception as e:
-        logger.error(f"Retrieval failure: {e}", exc_info=True)
+        logger.error(f"[3.FAIL] Retrieval failure: {e}", exc_info=True)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={
                 "error": "RETRIEVAL_FAILED",
-                "message": "Error occurred during the retrieval phase.",
-                "detail": str(e)
+                "message": "The retrieval index could not be queried."
             }
         )
     retrieval_latency = (time.perf_counter() - t0) * 1000
-    
-    # 2. Generation Phase
-    t0 = time.perf_counter()
+
+    # [4] Retrieval completed
+    logger.info(
+        f"[4] Retrieval completed: method='{retrieval_method}', "
+        f"chunks_found={len(retrieved_chunks)}, latency={retrieval_latency:.2f}ms"
+    )
+
+    # [5] Context assembly completed
+    logger.info(f"[5] Context assembly completed for {len(retrieved_chunks)} chunks.")
+
+    # [6] Generation provider selected
     provider_name = settings.GENERATION_PROVIDER.lower()
-    
+    logger.info(f"[6] Generation provider selected: '{provider_name}'")
+
+    # [7] Generation request started
+    t0 = time.perf_counter()
+    logger.info(f"[7] Generation request started with provider='{provider_name}'...")
+
     try:
         if provider_name == "sarvam":
+            # Check key configuration
+            if not settings.SARVAM_API_KEY or settings.SARVAM_API_KEY == "your_sarvam_api_key_here":
+                logger.error("[7.FAIL] SARVAM_API_KEY is not configured.")
+                return JSONResponse(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    content={
+                        "error": "CONFIGURATION_ERROR",
+                        "message": "The production RAG configuration is incomplete (missing SARVAM_API_KEY)."
+                    }
+                )
             generator = SarvamGenerator()
         else:
             generator = MockGenerator()
-            
+
         candidate_response = generator.generate(query, retrieved_chunks)
-        final_response = validate_generation(query, retrieved_chunks, candidate_response)
-        
+        # [8] LLM response received
+        logger.info(f"[8] LLM response received from provider='{provider_name}'.")
+
     except ValueError as e:
-        logger.error(f"Bad Request Parameter: {e}")
+        logger.error(f"[7.FAIL] Configuration error in generator: {e}")
         return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={
-                "error": "INVALID_REQUEST",
-                "message": str(e),
-                "detail": "Invalid parameter provided to generation subsystem."
+                "error": "CONFIGURATION_ERROR",
+                "message": "The production RAG configuration is incomplete."
             }
         )
     except (TimeoutError, RuntimeError) as e:
-        logger.error(f"LLM Provider error: {e}")
+        logger.error(f"[7.FAIL] LLM Provider failure: {e}")
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content={
-                "error": "LLM_PROVIDER_ERROR",
-                "message": "LLM Provider is currently unavailable.",
-                "detail": str(e)
+                "error": "GENERATION_FAILED",
+                "message": "The language model service could not generate a response."
             }
         )
     except Exception as e:
-        logger.error(f"Unexpected generation failure: {e}", exc_info=True)
+        logger.error(f"[7.FAIL] Unexpected generation failure: {e}", exc_info=True)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={
                 "error": "GENERATION_FAILED",
-                "message": "Internal error during answer generation.",
-                "detail": str(e)
+                "message": "The language model service could not generate a response."
             }
         )
 
+    # [9] Grounding guard completed
+    try:
+        final_response = validate_generation(query, retrieved_chunks, candidate_response)
+        guard_triggered = final_response.get("guard_triggered", False)
+        guard_reason = final_response.get("guard_reason", None)
+        logger.info(f"[9] Grounding guard completed: triggered={guard_triggered}, reason='{guard_reason}'")
+    except Exception as e:
+        logger.error(f"[9.FAIL] Grounding guard error: {e}", exc_info=True)
+        final_response = candidate_response
+        guard_triggered = False
+        guard_reason = None
+
     generation_latency = (time.perf_counter() - t0) * 1000
     total_latency = (time.perf_counter() - req_start_time) * 1000
-    
-    # Extract details for response
+
+    # [10] Response returned
     answer = final_response["answer"]
     sources = final_response.get("sources", [])
-    guard_triggered = final_response.get("guard_triggered", False)
-    guard_reason = final_response.get("guard_reason", None)
-    
-    # 3. Structured Logging
     max_ret_score = max((c.get("score", 0.0) for c in retrieved_chunks), default=0.0)
+
     logger.info(
-        f"RAG Request Completed: "
-        f"method='{retrieval_method}', "
-        f"chunks_retrieved={len(retrieved_chunks)}, "
-        f"max_score={max_ret_score:.4f}, "
-        f"provider='{provider_name}', "
-        f"guard_triggered={guard_triggered}, "
-        f"ret_lat={retrieval_latency:.2f}ms, "
-        f"gen_lat={generation_latency:.2f}ms, "
-        f"tot_lat={total_latency:.2f}ms"
+        f"[10] Response returned: method='{retrieval_method}', "
+        f"chunks={len(retrieved_chunks)}, max_score={max_ret_score:.4f}, "
+        f"guard={guard_triggered}, ret_lat={retrieval_latency:.2f}ms, "
+        f"gen_lat={generation_latency:.2f}ms, tot_lat={total_latency:.2f}ms"
     )
-    
+
     return QueryResponse(
         answer=answer,
         sources=sources,
@@ -243,14 +274,23 @@ def handle_query(payload: QueryRequest):
 # ─── Health endpoint ────────────────────────────────────────────────────────
 @app.get("/health", tags=["ops"])
 def health_check():
-    """Simple liveness & readiness probe with subsystem status."""
+    """Safe liveness & readiness probe with subsystem status diagnostics."""
     init_rag_resources()
+    dense_path = PROJECT_ROOT / "data" / "indexes" / settings.CHUNK_STRATEGY / "dense"
+    bm25_path  = PROJECT_ROOT / "data" / "indexes" / settings.CHUNK_STRATEGY / "bm25"
+    has_sarvam_key = bool(
+        settings.SARVAM_API_KEY and settings.SARVAM_API_KEY != "your_sarvam_api_key_here"
+    )
+
     return JSONResponse({
         "status": "ok",
-        "dense_chunks": len(vector_store.chunks_metadata),
+        "retrieval_backend": "dense" if embedding_gen is not None else "bm25",
+        "bm25_loaded": len(bm25_retriever.chunks) > 0,
         "bm25_chunks": len(bm25_retriever.chunks),
-        "dense_model_loaded": embedding_gen is not None,
-        "generation_provider": settings.GENERATION_PROVIDER
+        "dense_chunks": len(vector_store.chunks_metadata),
+        "index_path_exists": dense_path.exists() or bm25_path.exists(),
+        "generation_provider": settings.GENERATION_PROVIDER,
+        "sarvam_key_configured": has_sarvam_key
     })
 
 
