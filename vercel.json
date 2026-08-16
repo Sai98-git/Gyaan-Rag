@@ -1,38 +1,23 @@
 {
   "version": 2,
-  "comment": "Gyaan RAG — Vercel deployment configuration",
   "builds": [
     {
-      "comment": "Python/FastAPI backend. Uses api/requirements.txt (lean — no torch/transformers).",
       "src": "api/index.py",
-      "use": "@vercel/python",
-      "config": {
-        "maxLambdaSize": "50mb"
-      }
+      "use": "@vercel/python"
     }
   ],
   "routes": [
     {
-      "comment": "Health check liveness probe",
       "src": "/health",
       "dest": "/api/index.py"
     },
     {
-      "comment": "All RAG API requests → FastAPI",
       "src": "/api/(.*)",
       "dest": "/api/index.py"
     },
     {
-      "comment": "All other paths (frontend SPA) → FastAPI StaticFiles",
       "src": "/(.*)",
       "dest": "/api/index.py"
     }
-  ],
-  "env": {
-    "GENERATION_PROVIDER": "sarvam",
-    "CHUNK_STRATEGY": "semantic",
-    "RETRIEVAL_TOP_K": "10",
-    "MIN_RETRIEVAL_SCORE": "0.78",
-    "EMBEDDING_MODEL_NAME": "intfloat/multilingual-e5-small"
-  }
+  ]
 }
