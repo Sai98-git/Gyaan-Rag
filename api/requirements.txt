@@ -1,29 +1,11 @@
-# Vercel Python function requirements
-# ─────────────────────────────────────────────────────────────────────────────
-# This file is used by Vercel's @vercel/python runtime to build the serverless
-# function in api/index.py.
-#
-# It intentionally EXCLUDES:
-#   - torch        (~2 GB) — exceeds Vercel's 250 MB function limit
-#   - transformers (~600 MB) — same reason
-#   - sentence-transformers — depends on torch
-#   - datasets     — only needed for local ingestion scripts
-#
-# The full local stack uses the requirements.txt in the project root.
-#
-# What Vercel DOES serve:
-#   ✅ Frontend (HTML/CSS/JS via StaticFiles)
-#   ✅ GET /health
-#   ✅ POST /api/query with GENERATION_PROVIDER=sarvam (API calls only)
-#   ❌ Dense retrieval (embedding_gen = None → returns 503)
-# ─────────────────────────────────────────────────────────────────────────────
-
-fastapi==0.137.2
-uvicorn==0.49.0
-pydantic==2.13.4
-pydantic-settings==2.14.1
-python-multipart==0.0.32
-python-dotenv==1.1.1
-numpy==1.26.4
-requests==2.32.4
+# Vercel Python serverless requirements
+fastapi>=0.110.0
+uvicorn>=0.28.0
+pydantic>=2.6.0
+pydantic-settings>=2.2.0
+python-multipart>=0.0.9
+python-dotenv>=1.0.0
+numpy>=1.26.0
+requests>=2.31.0
 httpx>=0.27.0
+mangum>=0.17.0

@@ -1,6 +1,6 @@
 """
 Vercel Python serverless entry point for Gyaan RAG.
-Exposes the FastAPI application object to Vercel ASGI runtime.
+Exposes the FastAPI application object and Mangum handler to Vercel ASGI runtime.
 """
 import sys
 import os
@@ -34,8 +34,6 @@ except Exception as exc:
                 "status": "startup_error",
                 "error": str(exc),
                 "traceback": _error_traceback,
-                "sys_path": sys.path[:5],
-                "cwd": str(Path.cwd()),
             },
             status_code=500
         )
@@ -47,8 +45,13 @@ except Exception as exc:
                 "status": "startup_error",
                 "error": str(exc),
                 "traceback": _error_traceback,
-                "sys_path": sys.path[:5],
-                "cwd": str(Path.cwd()),
             },
             status_code=500
         )
+
+# Mangum ASGI handler for AWS Lambda / Vercel Serverless
+try:
+    from mangum import Mangum
+    handler = Mangum(app, lifespan="off")
+except ImportError:
+    handler = app
