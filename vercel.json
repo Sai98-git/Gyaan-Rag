@@ -1,7 +1,7 @@
 {
   "functions": {
     "api/index.py": {
-      "includeFiles": "backend/**,data/indexes/semantic/**"
+      "includeFiles": "backend/**,data/**"
     }
   }
 }

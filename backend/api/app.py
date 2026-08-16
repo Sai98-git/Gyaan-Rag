@@ -39,6 +39,45 @@ bm25_retriever = BM25Retriever()
 embedding_gen = None
 _initialized = False
 
+def resolve_index_directory(strategy: str, index_type: str) -> Optional[Path]:
+    """
+    Robustly resolves the index directory across local dev and Vercel serverless.
+    index_type: 'bm25' or 'dense'
+    """
+    target_filename = "bm25_index.json" if index_type == "bm25" else "metadata.json"
+    
+    # 1. Direct candidate directories
+    candidate_dirs = [
+        PROJECT_ROOT / "data" / "indexes" / strategy / index_type,
+        PROJECT_ROOT / "data" / "indexes" / "semantic" / index_type,
+        Path.cwd() / "data" / "indexes" / strategy / index_type,
+        Path.cwd() / "data" / "indexes" / "semantic" / index_type,
+        Path(__file__).resolve().parent.parent.parent / "data" / "indexes" / strategy / index_type,
+        Path(__file__).resolve().parent.parent / "data" / "indexes" / strategy / index_type,
+        Path("/var/task") / "data" / "indexes" / strategy / index_type,
+        Path("/var/task") / "data" / "indexes" / "semantic" / index_type,
+    ]
+    
+    for candidate in candidate_dirs:
+        if (candidate / target_filename).exists():
+            logger.info(f"Resolved {index_type} index at: {candidate}")
+            return candidate
+            
+    # 2. Recursive fallback search
+    search_roots = [PROJECT_ROOT, Path.cwd(), Path("/var/task"), Path(__file__).resolve().parent.parent.parent]
+    for root in search_roots:
+        if root.exists():
+            try:
+                for match in root.rglob(target_filename):
+                    found_dir = match.parent
+                    logger.info(f"Resolved {index_type} index via recursive search at: {found_dir}")
+                    return found_dir
+            except Exception as e:
+                logger.debug(f"Search in {root} failed: {e}")
+                
+    logger.error(f"Could not locate {target_filename} in any candidate or search location.")
+    return None
+
 def init_rag_resources():
     """Idempotent initialization of RAG indexes and embedding model."""
     global embedding_gen, vector_store, bm25_retriever, _initialized
@@ -46,20 +85,25 @@ def init_rag_resources():
         return
 
     logger.info("Initializing RAG resources and loading offline indexes...")
-    logger.info(f"Active Chunking Strategy: '{settings.CHUNK_STRATEGY}'")
+    strategy = settings.CHUNK_STRATEGY or "semantic"
+    logger.info(f"Active Chunking Strategy: '{strategy}'")
 
-    dense_dir = str(PROJECT_ROOT / "data" / "indexes" / settings.CHUNK_STRATEGY / "dense")
-    bm25_dir  = str(PROJECT_ROOT / "data" / "indexes" / settings.CHUNK_STRATEGY / "bm25")
+    dense_dir = resolve_index_directory(strategy, "dense")
+    bm25_dir  = resolve_index_directory(strategy, "bm25")
 
     # Load dense index
-    index_ok = vector_store.load(dense_dir)
+    index_ok = False
+    if dense_dir:
+        index_ok = vector_store.load(str(dense_dir))
     if not index_ok:
-        logger.warning(f"Dense index not found at '{dense_dir}'.")
+        logger.warning(f"Dense index could not be loaded from '{dense_dir}'.")
 
     # Load BM25 index
-    bm25_ok = bm25_retriever.load(bm25_dir)
+    bm25_ok = False
+    if bm25_dir:
+        bm25_ok = bm25_retriever.load(str(bm25_dir))
     if not bm25_ok:
-        logger.warning(f"BM25 index not found at '{bm25_dir}'.")
+        logger.warning(f"BM25 index could not be loaded from '{bm25_dir}'.")
 
     # Attempt to load embedding model (local dev / GPU environments only)
     if index_ok:
@@ -110,6 +154,7 @@ class QueryResponse(BaseModel):
 
 
 @app.post("/api/query", response_model=QueryResponse)
+@app.post("/query", response_model=QueryResponse)
 def handle_query(payload: QueryRequest):
     """
     RAG endpoint executing the complete pipeline:
@@ -271,26 +316,31 @@ def handle_query(payload: QueryRequest):
         guard_reason=guard_reason
     )
 
-# ─── Health endpoint ────────────────────────────────────────────────────────
+# ─── Health endpoints ────────────────────────────────────────────────────────
 @app.get("/health", tags=["ops"])
+@app.get("/api/health", tags=["ops"])
 def health_check():
     """Safe liveness & readiness probe with subsystem status diagnostics."""
     init_rag_resources()
-    dense_path = PROJECT_ROOT / "data" / "indexes" / settings.CHUNK_STRATEGY / "dense"
-    bm25_path  = PROJECT_ROOT / "data" / "indexes" / settings.CHUNK_STRATEGY / "bm25"
+    strategy = settings.CHUNK_STRATEGY or "semantic"
+    dense_path = resolve_index_directory(strategy, "dense")
+    bm25_path  = resolve_index_directory(strategy, "bm25")
     has_sarvam_key = bool(
         settings.SARVAM_API_KEY and settings.SARVAM_API_KEY != "your_sarvam_api_key_here"
     )
+    is_ready = len(bm25_retriever.chunks) > 0 or len(vector_store.chunks_metadata) > 0
 
     return JSONResponse({
         "status": "ok",
+        "service": "gyaan-rag",
+        "retrieval": "ready" if is_ready else "degraded",
         "retrieval_backend": "dense" if embedding_gen is not None else "bm25",
         "bm25_loaded": len(bm25_retriever.chunks) > 0,
         "bm25_chunks": len(bm25_retriever.chunks),
         "dense_chunks": len(vector_store.chunks_metadata),
-        "index_path_exists": dense_path.exists() or bm25_path.exists(),
+        "index_path_exists": dense_path is not None or bm25_path is not None,
         "generation_provider": settings.GENERATION_PROVIDER,
-        "sarvam_key_configured": has_sarvam_key
+        "sarvam_configured": has_sarvam_key
     })
 
 
