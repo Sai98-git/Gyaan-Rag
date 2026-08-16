@@ -9,6 +9,10 @@
           "data/indexes/semantic/**"
         ]
       }
+    },
+    {
+      "src": "frontend/**",
+      "use": "@vercel/static"
     }
   ],
   "routes": [
