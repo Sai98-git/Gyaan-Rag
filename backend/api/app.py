@@ -12,12 +12,14 @@ from fastapi.responses import JSONResponse
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 from backend.core.config import settings
-from backend.retrieval.embeddings import get_embedding_generator
 from backend.retrieval.vector_store import NumpyVectorStore
 from backend.retrieval.bm25 import BM25Retriever
 from backend.generation.mock import MockGenerator
 from backend.generation.sarvam import SarvamGenerator
 from backend.generation.guard import validate_generation
+
+# NOTE: EmbeddingGenerator (torch/transformers) is imported lazily inside startup_event
+# so the module can load on Vercel even without those heavy packages installed.
 
 # Configure logging
 logger = logging.getLogger("rag_api")
@@ -35,25 +37,51 @@ embedding_gen = None
 
 @app.on_event("startup")
 def startup_event():
+    """
+    Resilient startup: loads indexes and embedding model when available.
+    If anything is missing (e.g. on Vercel where indexes/model are not deployed),
+    the server still starts so the frontend and /health endpoint work.
+    /api/query will return a 503 explaining the situation.
+    """
     global embedding_gen, vector_store, bm25_retriever
-    
+
     logger.info("Initializing RAG resources and loading offline indexes...")
     logger.info(f"Active Chunking Strategy: '{settings.CHUNK_STRATEGY}'")
-    
+
     dense_dir = str(PROJECT_ROOT / "data" / "indexes" / settings.CHUNK_STRATEGY / "dense")
     bm25_dir  = str(PROJECT_ROOT / "data" / "indexes" / settings.CHUNK_STRATEGY / "bm25")
-    
-    # Load dense index
-    if not vector_store.load(dense_dir):
-        logger.error(f"Failed to load dense index from {dense_dir}. Ensure build_index script is run first.")
-        
-    # Load BM25 index
-    if not bm25_retriever.load(bm25_dir):
-        logger.error(f"Failed to load BM25 index from {bm25_dir}. Ensure build_index script is run first.")
-        
-    # Initialize embedding generator (triggers weights loading)
-    embedding_gen = get_embedding_generator()
-    logger.info("RAG resources initialized successfully.")
+
+    # Load dense index (non-fatal if missing)
+    index_ok = vector_store.load(dense_dir)
+    if not index_ok:
+        logger.warning(
+            f"Dense index not found at '{dense_dir}'. "
+            "RAG retrieval will be unavailable. Run scripts/build_index.py to create it."
+        )
+
+    # Load BM25 index (non-fatal if missing)
+    bm25_ok = bm25_retriever.load(bm25_dir)
+    if not bm25_ok:
+        logger.warning(f"BM25 index not found at '{bm25_dir}'.")
+
+    # Load embedding model — only when the dense index was loaded successfully.
+    # Importing torch/transformers is lazy to avoid import errors on environments
+    # where they are not installed (e.g. Vercel lightweight Python runtime).
+    if index_ok:
+        try:
+            from backend.retrieval.embeddings import get_embedding_generator
+            embedding_gen = get_embedding_generator()
+            logger.info("RAG resources initialized successfully.")
+        except Exception as exc:
+            logger.warning(
+                f"Embedding model could not be loaded: {exc}. "
+                "RAG retrieval will be unavailable on this deployment."
+            )
+    else:
+        logger.warning(
+            "Skipping embedding model load — no dense index present. "
+            "The application will serve the frontend but RAG queries will return 503."
+        )
 
 
 class QueryRequest(BaseModel):
@@ -97,7 +125,19 @@ def handle_query(payload: QueryRequest):
         )
         
     logger.info(f"Received query request: '{query}'")
-    
+
+    # Guard: reject queries when the RAG pipeline is not initialized.
+    # This happens on Vercel (no indexes/model) or before build_index.py has been run.
+    if embedding_gen is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "RAG pipeline not initialized: the dense index or embedding model is not available "
+                "on this deployment. Run 'python -m scripts.build_index' locally, or deploy on a "
+                "host that supports large model files (Railway / Render / Fly.io)."
+            )
+        )
+
     # 1. Retrieval Phase
     t0 = time.perf_counter()
     try:

@@ -3,7 +3,7 @@
   "comment": "Gyaan RAG — Vercel deployment configuration",
   "builds": [
     {
-      "comment": "Python/FastAPI backend (api/index.py exposes the FastAPI 'app')",
+      "comment": "Python/FastAPI backend. Uses api/requirements.txt (lean — no torch/transformers).",
       "src": "api/index.py",
       "use": "@vercel/python",
       "config": {
@@ -13,17 +13,17 @@
   ],
   "routes": [
     {
-      "comment": "Health check — direct to Python function",
+      "comment": "Health check liveness probe",
       "src": "/health",
       "dest": "/api/index.py"
     },
     {
-      "comment": "All /api/* requests go to the Python FastAPI function",
+      "comment": "All RAG API requests → FastAPI",
       "src": "/api/(.*)",
       "dest": "/api/index.py"
     },
     {
-      "comment": "Frontend static assets — let FastAPI serve them through StaticFiles",
+      "comment": "All other paths (frontend SPA) → FastAPI StaticFiles",
       "src": "/(.*)",
       "dest": "/api/index.py"
     }
