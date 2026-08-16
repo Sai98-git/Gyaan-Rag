@@ -227,9 +227,10 @@ def health_check():
 
 
 # ─── Frontend SPA (mounted for local dev; served statically on Vercel) ────────
-_frontend_dir = PROJECT_ROOT / "frontend"
+_frontend_dir = PROJECT_ROOT / "public" if (PROJECT_ROOT / "public").is_dir() else (PROJECT_ROOT / "frontend")
 if _frontend_dir.is_dir():
     app.mount("/", StaticFiles(directory=str(_frontend_dir), html=True), name="static")
 else:
     logger.info(f"Frontend directory '{_frontend_dir}' not mounted locally (handled by static hosting/CDN).")
+
 
