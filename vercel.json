@@ -3,7 +3,12 @@
   "builds": [
     {
       "src": "api/index.py",
-      "use": "@vercel/python"
+      "use": "@vercel/python",
+      "config": {
+        "includeFiles": [
+          "data/indexes/semantic/**"
+        ]
+      }
     }
   ],
   "routes": [
@@ -16,8 +21,32 @@
       "dest": "/api/index.py"
     },
     {
+      "src": "/assets/(.*)",
+      "dest": "/frontend/assets/$1"
+    },
+    {
+      "src": "/components/(.*)",
+      "dest": "/frontend/components/$1"
+    },
+    {
+      "src": "/style.css",
+      "dest": "/frontend/style.css"
+    },
+    {
+      "src": "/app.js",
+      "dest": "/frontend/app.js"
+    },
+    {
+      "src": "/favicon.ico",
+      "dest": "/frontend/assets/favicon.ico"
+    },
+    {
+      "src": "/",
+      "dest": "/frontend/index.html"
+    },
+    {
       "src": "/(.*)",
-      "dest": "/api/index.py"
+      "dest": "/frontend/$1"
     }
   ]
 }

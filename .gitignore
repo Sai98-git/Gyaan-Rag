@@ -30,9 +30,12 @@ ENV/
 !.env.example
 
 # ============================================================
-# Generated index data (too large / reproducible via scripts)
+# Generated index data (passage and sliding_window are excluded)
+# The active semantic index (~9.2 MB) is tracked for production deployment
 # ============================================================
-data/indexes/
+data/indexes/*
+!data/indexes/semantic/
+!data/indexes/semantic/**
 
 # ============================================================
 # Cache directories
