@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="hi">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ज्ञान RAG — Indic Grounded AI Research Assistant</title>
+    <meta name="description"
+        content="A brutalist, Indic-first grounded Retrieval-Augmented Generation system built for precise fact-backed Indian language answers.">
+
+    <!-- Google Fonts typographic stack -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Space+Grotesk:wght@400;700&family=Yatra+One&family=Rozha+One&family=Caveat:wght@400;700&display=swap"
+        rel="stylesheet">
+
+    <!-- Custom Stylesheet -->
+    <link rel="stylesheet" href="style.css">
+    <link rel="icon" type="image/x-icon" href="/assets/favicon.ico">
+</head>
+
+<body>
+
+    <!-- Main Navigation Bar -->
+    <nav id="navbar-container"></nav>
+
+    <!-- Main Layout Grid/Container -->
+    <main class="main-container">
+
+        <!-- Brutalist event-poster style Hero section -->
+        <section id="hero-container"></section>
+
+        <!-- Search Input Section -->
+        <section id="query-container" class="layout-section"></section>
+
+        <!-- Response Panel (Answers + Sources + Guards) -->
+        <section id="response-container" class="layout-section" style="display: none;"></section>
+
+        <!-- System Architecture Terminals -->
+        <div class="system-grid">
+            <section id="pipeline-container" class="layout-section"></section>
+            <section id="status-container" class="layout-section"></section>
+        </div>
+
+        <!-- Why Gyaan RAG -->
+        <section id="why-container" class="layout-section"></section>
+
+        <!-- Research Metrics -->
+        <section id="metrics-container" class="layout-section"></section>
+
+    </main>
+
+    <!-- Sketchy Footer -->
+    <footer class="main-footer">
+        <div class="footer-stroke"></div>
+        <p>© 2026 ज्ञान/RAG Subsystem. Build by Hackers for Builders in Goa House.</p>
+    </footer>
+
+    <!-- Main Module Script -->
+    <script type="module" src="app.js"></script>
+</body>
+
+</html>
