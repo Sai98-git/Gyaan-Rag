@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     CACHE_DIR: str = os.path.join(os.path.expanduser("~"), ".cache", "rag_in_goa")
 
     # Chunking Configuration Settings
-    CHUNK_STRATEGY: str = "passage"  # "passage", "sliding_window", "semantic"
+    CHUNK_STRATEGY: str = "semantic"  # "passage", "sliding_window", "semantic"
     CHUNK_SIZE: int = 500
     CHUNK_OVERLAP: int = 50
     MIN_CHUNK_SIZE: int = 50

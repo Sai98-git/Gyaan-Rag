@@ -1,3 +1,4 @@
+import sys
 import time
 import logging
 from pathlib import Path
@@ -7,9 +8,13 @@ from fastapi import FastAPI, HTTPException, status
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 
-# Resolve project root as the directory two levels above this file (backend/api/app.py)
-# Works regardless of the current working directory (important for Vercel)
+# Resolve project root and ensure it is in sys.path before any local imports
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+_backend_dir = Path(__file__).resolve().parent.parent
+if str(_backend_dir) not in sys.path:
+    sys.path.insert(0, str(_backend_dir))
 
 from backend.core.config import settings
 from backend.retrieval.vector_store import NumpyVectorStore
@@ -18,11 +23,9 @@ from backend.generation.mock import MockGenerator
 from backend.generation.sarvam import SarvamGenerator
 from backend.generation.guard import validate_generation
 
-# NOTE: EmbeddingGenerator (torch/transformers) is imported lazily inside startup_event
-# so the module can load on Vercel even without those heavy packages installed.
-
 # Configure logging
 logger = logging.getLogger("rag_api")
+logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(
     title="Indic RAG Subsystem API",
@@ -34,16 +37,13 @@ app = FastAPI(
 vector_store = NumpyVectorStore()
 bm25_retriever = BM25Retriever()
 embedding_gen = None
+_initialized = False
 
-@app.on_event("startup")
-def startup_event():
-    """
-    Resilient startup: loads indexes and embedding model when available.
-    If anything is missing (e.g. on Vercel where indexes/model are not deployed),
-    the server still starts so the frontend and /health endpoint work.
-    /api/query will return a 503 explaining the situation.
-    """
-    global embedding_gen, vector_store, bm25_retriever
+def init_rag_resources():
+    """Idempotent initialization of RAG indexes and embedding model."""
+    global embedding_gen, vector_store, bm25_retriever, _initialized
+    if _initialized:
+        return
 
     logger.info("Initializing RAG resources and loading offline indexes...")
     logger.info(f"Active Chunking Strategy: '{settings.CHUNK_STRATEGY}'")
@@ -51,37 +51,37 @@ def startup_event():
     dense_dir = str(PROJECT_ROOT / "data" / "indexes" / settings.CHUNK_STRATEGY / "dense")
     bm25_dir  = str(PROJECT_ROOT / "data" / "indexes" / settings.CHUNK_STRATEGY / "bm25")
 
-    # Load dense index (non-fatal if missing)
+    # Load dense index
     index_ok = vector_store.load(dense_dir)
     if not index_ok:
-        logger.warning(
-            f"Dense index not found at '{dense_dir}'. "
-            "RAG retrieval will be unavailable. Run scripts/build_index.py to create it."
-        )
+        logger.warning(f"Dense index not found at '{dense_dir}'.")
 
-    # Load BM25 index (non-fatal if missing)
+    # Load BM25 index
     bm25_ok = bm25_retriever.load(bm25_dir)
     if not bm25_ok:
         logger.warning(f"BM25 index not found at '{bm25_dir}'.")
 
-    # Load embedding model — only when the dense index was loaded successfully.
-    # Importing torch/transformers is lazy to avoid import errors on environments
-    # where they are not installed (e.g. Vercel lightweight Python runtime).
+    # Attempt to load embedding model (local dev / GPU environments)
     if index_ok:
         try:
             from backend.retrieval.embeddings import get_embedding_generator
             embedding_gen = get_embedding_generator()
-            logger.info("RAG resources initialized successfully.")
+            logger.info("Embedding model loaded successfully.")
         except Exception as exc:
             logger.warning(
-                f"Embedding model could not be loaded: {exc}. "
-                "RAG retrieval will be unavailable on this deployment."
+                f"Embedding model could not be loaded ({exc}). "
+                "Falling back to BM25 lexical retrieval on the local index."
             )
-    else:
-        logger.warning(
-            "Skipping embedding model load — no dense index present. "
-            "The application will serve the frontend but RAG queries will return 503."
-        )
+
+    _initialized = True
+    logger.info(
+        f"RAG resources ready (dense_chunks={len(vector_store.chunks_metadata)}, "
+        f"bm25_chunks={len(bm25_retriever.chunks)}, dense_model={'loaded' if embedding_gen else 'none'})."
+    )
+
+@app.on_event("startup")
+def startup_event():
+    init_rag_resources()
 
 
 class QueryRequest(BaseModel):
@@ -112,9 +112,12 @@ class QueryResponse(BaseModel):
 @app.post("/api/query", response_model=QueryResponse)
 def handle_query(payload: QueryRequest):
     """
-    RAG endpoint that accepts a query, runs dense retrieval, constructs context,
-    generates a grounded answer, applies safety guards, and returns sources.
+    RAG endpoint that accepts a query, runs retrieval (Dense if model available,
+    BM25 fallback on serverless), constructs context, generates a grounded answer,
+    applies safety guards, and returns sources.
     """
+    init_rag_resources()
+
     query = payload.query.strip()
     req_start_time = time.perf_counter()
     
@@ -126,28 +129,37 @@ def handle_query(payload: QueryRequest):
         
     logger.info(f"Received query request: '{query}'")
 
-    # Guard: reject queries when the RAG pipeline is not initialized.
-    # This happens on Vercel (no indexes/model) or before build_index.py has been run.
-    if embedding_gen is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "RAG pipeline not initialized: the dense index or embedding model is not available "
-                "on this deployment. Run 'python -m scripts.build_index' locally, or deploy on a "
-                "host that supports large model files (Railway / Render / Fly.io)."
-            )
-        )
-
     # 1. Retrieval Phase
     t0 = time.perf_counter()
+    retrieved_chunks = []
+    retrieval_method = "dense"
+
     try:
-        query_emb = embedding_gen.embed_query(query)
-        retrieved_chunks = vector_store.search(query_emb, top_k=settings.RETRIEVAL_TOP_K)
+        if embedding_gen is not None:
+            query_emb = embedding_gen.embed_query(query)
+            retrieved_chunks = vector_store.search(query_emb, top_k=settings.RETRIEVAL_TOP_K)
+            retrieval_method = "dense"
+        elif len(bm25_retriever.chunks) > 0:
+            retrieved_chunks = bm25_retriever.search(query, top_k=settings.RETRIEVAL_TOP_K)
+            retrieval_method = "bm25"
+        else:
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={
+                    "error": "INDEX_NOT_AVAILABLE",
+                    "message": "Retrieval index is not loaded on this server instance.",
+                    "detail": "Neither dense nor BM25 index files were loaded."
+                }
+            )
     except Exception as e:
-        logger.error(f"Retrieval failure: {e}")
-        raise HTTPException(
+        logger.error(f"Retrieval failure: {e}", exc_info=True)
+        return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Subsystem retrieval failure: {e}"
+            content={
+                "error": "RETRIEVAL_FAILED",
+                "message": "Error occurred during the retrieval phase.",
+                "detail": str(e)
+            }
         )
     retrieval_latency = (time.perf_counter() - t0) * 1000
     
@@ -156,35 +168,45 @@ def handle_query(payload: QueryRequest):
     provider_name = settings.GENERATION_PROVIDER.lower()
     
     try:
-        # Select Generator
         if provider_name == "sarvam":
             generator = SarvamGenerator()
         else:
             generator = MockGenerator()
             
         candidate_response = generator.generate(query, retrieved_chunks)
-        
-        # Apply Hallucination/Grounding Guards
         final_response = validate_generation(query, retrieved_chunks, candidate_response)
         
     except ValueError as e:
         logger.error(f"Bad Request Parameter: {e}")
-        raise HTTPException(
+        return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
+            content={
+                "error": "INVALID_REQUEST",
+                "message": str(e),
+                "detail": "Invalid parameter provided to generation subsystem."
+            }
         )
     except (TimeoutError, RuntimeError) as e:
-        logger.error(f"LLM Provider unavailable: {e}")
-        raise HTTPException(
+        logger.error(f"LLM Provider error: {e}")
+        return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"LLM Provider failure: {e}"
+            content={
+                "error": "LLM_PROVIDER_ERROR",
+                "message": "LLM Provider is currently unavailable.",
+                "detail": str(e)
+            }
         )
     except Exception as e:
-        logger.error(f"Unexpected generation failure: {e}")
-        raise HTTPException(
+        logger.error(f"Unexpected generation failure: {e}", exc_info=True)
+        return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"LLM Subsystem generation failure: {e}"
+            content={
+                "error": "GENERATION_FAILED",
+                "message": "Internal error during answer generation.",
+                "detail": str(e)
+            }
         )
+
     generation_latency = (time.perf_counter() - t0) * 1000
     total_latency = (time.perf_counter() - req_start_time) * 1000
     
@@ -195,11 +217,10 @@ def handle_query(payload: QueryRequest):
     guard_reason = final_response.get("guard_reason", None)
     
     # 3. Structured Logging
-    max_ret_score = max((c["score"] for c in retrieved_chunks), default=0.0)
+    max_ret_score = max((c.get("score", 0.0) for c in retrieved_chunks), default=0.0)
     logger.info(
         f"RAG Request Completed: "
-        f"query_id=None, "
-        f"strategy='{settings.CHUNK_STRATEGY}', "
+        f"method='{retrieval_method}', "
         f"chunks_retrieved={len(retrieved_chunks)}, "
         f"max_score={max_ret_score:.4f}, "
         f"provider='{provider_name}', "
@@ -222,8 +243,15 @@ def handle_query(payload: QueryRequest):
 # ─── Health endpoint ────────────────────────────────────────────────────────
 @app.get("/health", tags=["ops"])
 def health_check():
-    """Simple liveness probe. Returns 200 OK if the server is running."""
-    return JSONResponse({"status": "ok"})
+    """Simple liveness & readiness probe with subsystem status."""
+    init_rag_resources()
+    return JSONResponse({
+        "status": "ok",
+        "dense_chunks": len(vector_store.chunks_metadata),
+        "bm25_chunks": len(bm25_retriever.chunks),
+        "dense_model_loaded": embedding_gen is not None,
+        "generation_provider": settings.GENERATION_PROVIDER
+    })
 
 
 # ─── Frontend SPA (mounted for local dev; served statically on Vercel) ────────
@@ -232,5 +260,3 @@ if _frontend_dir.is_dir():
     app.mount("/", StaticFiles(directory=str(_frontend_dir), html=True), name="static")
 else:
     logger.info(f"Frontend directory '{_frontend_dir}' not mounted locally (handled by static hosting/CDN).")
-
-
