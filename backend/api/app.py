@@ -247,6 +247,8 @@ def _execute_rag_pipeline(query: str) -> Dict[str, Any]:
 
 @app.post("/api/query", response_model=QueryResponse)
 @app.post("/query", response_model=QueryResponse)
+@app.post("/api/index.py/api/query", response_model=QueryResponse)
+@app.post("/api/index.py/query", response_model=QueryResponse)
 def handle_query(payload: QueryRequest):
     """
     Text-based query endpoint executing retrieval -> generation -> guard.
@@ -303,6 +305,8 @@ def handle_query(payload: QueryRequest):
 
 @app.post("/api/voice", response_model=VoiceResponse)
 @app.post("/voice", response_model=VoiceResponse)
+@app.post("/api/index.py/api/voice", response_model=VoiceResponse)
+@app.post("/api/index.py/voice", response_model=VoiceResponse)
 async def handle_voice(
     file: UploadFile = File(..., description="Recorded audio clip from microphone"),
     language_code: Optional[str] = Form(None, description="Optional language code (e.g., 'hi-IN')")
@@ -439,6 +443,8 @@ async def handle_voice(
 # ─── Health & Diagnostics ────────────────────────────────────────────────────
 @app.get("/health", tags=["ops"])
 @app.get("/api/health", tags=["ops"])
+@app.get("/api/index.py/health", tags=["ops"])
+@app.get("/api/index.py/api/health", tags=["ops"])
 def health_check():
     """Safe liveness & readiness probe with subsystem status diagnostics."""
     init_rag_resources()
