@@ -1,4 +1,34 @@
 {
+  "rewrites": [
+    {
+      "source": "/health",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/api/health",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/api/query",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/query",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/api/voice",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/voice",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/api/:match*",
+      "destination": "/api/index.py"
+    }
+  ],
   "functions": {
     "api/index.py": {
       "includeFiles": "backend/**,data/**"
