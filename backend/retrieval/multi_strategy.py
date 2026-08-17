@@ -189,3 +189,9 @@ class MultiStrategyRetriever:
             f"Top BM25={fused_results[0]['bm25_score']:.4f}"
         )
         return fused_results
+
+    def retrieve(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
+        return self.search(query, top_k=top_k)
+
+    def retrieve_hybrid(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
+        return self.search(query, top_k=top_k)
