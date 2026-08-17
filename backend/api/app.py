@@ -60,21 +60,17 @@ _initialized = False
 
 def resolve_index_directory(strategy: str, index_type: str) -> Optional[Path]:
     """
-    Robustly resolves the index directory across local dev and Vercel serverless.
-    index_type: 'bm25' or 'dense'
+    Robustly locates the precomputed index directory across local dev, 
+    production workspace, and Vercel serverless /var/task runtime environments.
     """
-    target_filename = "bm25_index.json" if index_type == "bm25" else "metadata.json"
+    target_filename = "embeddings.npy" if index_type == "dense" else "bm25_index.json"
     
-    # 1. Direct candidate directories
+    # 1. Direct candidate paths
     candidate_dirs = [
         PROJECT_ROOT / "data" / "indexes" / strategy / index_type,
-        PROJECT_ROOT / "data" / "indexes" / "semantic" / index_type,
         Path.cwd() / "data" / "indexes" / strategy / index_type,
-        Path.cwd() / "data" / "indexes" / "semantic" / index_type,
-        Path(__file__).resolve().parent.parent.parent / "data" / "indexes" / strategy / index_type,
-        Path(__file__).resolve().parent.parent / "data" / "indexes" / strategy / index_type,
         Path("/var/task") / "data" / "indexes" / strategy / index_type,
-        Path("/var/task") / "data" / "indexes" / "semantic" / index_type,
+        Path(__file__).resolve().parent.parent.parent / "data" / "indexes" / strategy / index_type,
     ]
     
     for candidate in candidate_dirs:
@@ -98,12 +94,12 @@ def resolve_index_directory(strategy: str, index_type: str) -> Optional[Path]:
     return None
 
 def init_rag_resources():
-    """Idempotent initialization of RAG indexes and embedding model."""
-    global embedding_gen, vector_store, bm25_retriever, _initialized
+    """Idempotent initialization of RAG indexes, multi-strategy retriever, and embedding model."""
+    global embedding_gen, vector_store, bm25_retriever, multi_retriever, _initialized
     if _initialized:
         return
 
-    logger.info("Initializing RAG resources and loading offline indexes...")
+    logger.info("Initializing RAG resources and loading offline multi-strategy indexes...")
     strategy = settings.CHUNK_STRATEGY or "semantic"
     logger.info(f"Active Chunking Strategy: '{strategy}'")
 
@@ -124,6 +120,22 @@ def init_rag_resources():
     if not bm25_ok:
         logger.warning(f"BM25 index could not be loaded from '{bm25_dir}'.")
 
+    # Load Multi-Strategy Retriever (semantic, sliding_window, passage)
+    try:
+        from backend.retrieval.multi_strategy import MultiStrategyRetriever
+        indexes_base = PROJECT_ROOT / "data" / "indexes"
+        if not indexes_base.exists():
+            for r in [Path.cwd(), Path("/var/task"), Path(__file__).resolve().parent.parent.parent]:
+                cand = r / "data" / "indexes"
+                if cand.exists():
+                    indexes_base = cand
+                    break
+        multi_retriever = MultiStrategyRetriever(str(indexes_base))
+        multi_retriever.load()
+        logger.info(f"MultiStrategyRetriever loaded with {multi_retriever.total_chunks} total chunks across strategies.")
+    except Exception as e:
+        logger.warning(f"Could not initialize MultiStrategyRetriever: {e}")
+
     # Attempt to load embedding model (local dev / GPU environments only)
     if index_ok:
         try:
@@ -133,13 +145,14 @@ def init_rag_resources():
         except Exception as exc:
             logger.info(
                 f"Dense embedding model not loaded ({exc}). "
-                "Running in serverless mode with local BM25 index."
+                "Running in serverless mode with local BM25 multi-strategy index."
             )
 
     _initialized = True
     logger.info(
         f"RAG resources ready (dense_chunks={len(vector_store.chunks_metadata)}, "
-        f"bm25_chunks={len(bm25_retriever.chunks)}, dense_model={'loaded' if embedding_gen else 'none'})."
+        f"bm25_chunks={len(bm25_retriever.chunks)}, multi_strategy_chunks={multi_retriever.total_chunks if multi_retriever else 0}, "
+        f"dense_model={'loaded' if embedding_gen else 'none'})."
     )
 
 @app.on_event("startup")
@@ -208,15 +221,18 @@ def _execute_rag_pipeline(query: str) -> Dict[str, Any]:
     # 1. Retrieval
     t0 = time.perf_counter()
     retrieved_chunks = []
-    retrieval_method = "dense"
+    retrieval_method = "multi_strategy_bm25_rrf"
 
-    if embedding_gen is not None:
-        query_emb = embedding_gen.embed_query(query)
-        retrieved_chunks = vector_store.search(query_emb, top_k=settings.RETRIEVAL_TOP_K)
-        retrieval_method = "dense"
+    if multi_retriever and multi_retriever.loaded:
+        retrieved_chunks = multi_retriever.search(query, top_k=settings.RETRIEVAL_TOP_K)
+        retrieval_method = "multi_strategy_bm25_rrf"
     elif len(bm25_retriever.chunks) > 0:
         retrieved_chunks = bm25_retriever.search(query, top_k=settings.RETRIEVAL_TOP_K)
         retrieval_method = "bm25"
+    elif embedding_gen is not None:
+        query_emb = embedding_gen.embed_query(query)
+        retrieved_chunks = vector_store.search(query_emb, top_k=settings.RETRIEVAL_TOP_K)
+        retrieval_method = "dense"
     else:
         raise RuntimeError("No retrieval index is loaded on this server instance.")
 
@@ -497,14 +513,17 @@ def health_check():
     has_sarvam_key = bool(
         settings.SARVAM_API_KEY and settings.SARVAM_API_KEY != "your_sarvam_api_key_here"
     )
-    is_ready = len(bm25_retriever.chunks) > 0 or len(vector_store.chunks_metadata) > 0
+    is_ready = (multi_retriever and multi_retriever.loaded) or len(bm25_retriever.chunks) > 0 or len(vector_store.chunks_metadata) > 0
+    multi_chunks = multi_retriever.total_chunks if multi_retriever else len(bm25_retriever.chunks)
 
     return JSONResponse({
         "status": "ok",
         "service": "gyaan-rag",
         "pipeline_type": "voice-enabled-rag",
         "retrieval": "ready" if is_ready else "degraded",
-        "retrieval_backend": "dense" if embedding_gen is not None else "bm25",
+        "retrieval_backend": "multi_strategy_bm25_rrf",
+        "multi_strategy_loaded": multi_retriever.loaded if multi_retriever else False,
+        "multi_strategy_chunks": multi_chunks,
         "bm25_loaded": len(bm25_retriever.chunks) > 0,
         "bm25_chunks": len(bm25_retriever.chunks),
         "dense_chunks": len(vector_store.chunks_metadata),

@@ -2,11 +2,21 @@ import re
 import logging
 from typing import List, Dict, Any, Optional
 from backend.core.config import settings
+from backend.retrieval.normalizer import expand_indic_query
 
 logger = logging.getLogger(__name__)
 
-HINDI_ABSTENTION = "मुझे उपलब्ध स्रोतों में इस प्रश्न का उत्तर देने के लिए पर्याप्त जानकारी नहीं मिली।"
+HINDI_ABSTENTION = "मुझे उपलब्ध स्रोतों में इस प्रश्न का विश्वसनीय उत्तर देने के लिए पर्याप्त जानकारी नहीं मिली।"
 ENGLISH_ABSTENTION = "I don't have enough information in the retrieved sources to answer that reliably."
+
+GENERIC_STOP_WORDS = {
+    "what", "is", "a", "an", "the", "of", "in", "on", "at", "to", "for", "with", 
+    "about", "how", "who", "where", "when", "why", "which", "can", "you", "tell", "me",
+    "kya", "hai", "hain", "hota", "hoti", "hote", "ka", "ke", "ki", "ko", "se", "mein", 
+    "me", "par", "batao", "kise", "kaise", "kyun", "kaun", "bhi", "aur", "ya",
+    "क्या", "है", "हैं", "होता", "होती", "होते", "का", "के", "की", "को", "से", "में", 
+    "पर", "बताओ", "किसे", "कैसे", "क्यों", "कौन", "भी", "और", "या", "एक", "यह", "वह"
+}
 
 
 def is_devanagari(text: str) -> bool:
@@ -21,17 +31,28 @@ def get_localized_abstention(query: str) -> str:
     return ENGLISH_ABSTENTION
 
 
+def extract_key_terms(text: str) -> set:
+    """Extracts non-stopword tokens from a text string."""
+    clean = re.sub(r'[।॥\|!\?\.,;:\(\)\"\'\-\n\r\t]', ' ', text.lower())
+    words = [w.strip() for w in clean.split() if len(w.strip()) > 1]
+    return {w for w in words if w not in GENERIC_STOP_WORDS}
+
+
 def check_pre_retrieval_guard(query: str, context: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """
-    Fast pre-generation check.
-    If context is empty or maximum retrieval score is below threshold,
-    immediately returns an abstention dictionary in ~1ms without invoking the LLM.
+    Tier 1 Pre-Generation Evidence Guard:
+    Answers: 'Do we have enough evidence to answer this query?'
+    
+    1. Rejects empty context.
+    2. Expands query tokens (English/Hinglish -> Indic) and verifies that key content
+       subject terms exist in the retrieved passages.
+    3. If only generic stop words matched or subject is completely absent, abstains safely.
     """
     safe_fallback = get_localized_abstention(query)
     
     # 1. Empty context check
     if not context:
-        logger.info("[Pre-Gen Guard] Empty context -> Fast abstention.")
+        logger.info(f"[Pre-Gen Guard] Empty context for query '{query}' -> Abstaining.")
         return {
             "answer": safe_fallback,
             "sources": [],
@@ -39,42 +60,46 @@ def check_pre_retrieval_guard(query: str, context: List[Dict[str, Any]]) -> Opti
             "guard_reason": "Empty context"
         }
 
-    # 2. Maximum retrieval score threshold check
-    max_score = max(chunk.get("score", 0.0) for chunk in context)
-    retrieval_method = context[0].get("retrieval_method", "dense") if context else "dense"
-    effective_threshold = settings.MIN_RETRIEVAL_SCORE if retrieval_method == "dense" else 1.0
+    # 2. Content subject presence check
+    # Expand query so that English/Hinglish subjects match Indic passages
+    expanded = expand_indic_query(query)
+    query_key_terms = extract_key_terms(expanded) | extract_key_terms(query)
+    
+    # Extract words from retrieved context passages
+    context_text = " ".join(chunk.get("text", "") for chunk in context)
+    context_words = set(re.sub(r'[।॥\|!\?\.,;:\(\)\"\'\-\n\r\t]', ' ', context_text.lower()).split())
 
-    if max_score < effective_threshold:
-        logger.info(
-            f"[Pre-Gen Guard] Low confidence (score={max_score:.4f} < {effective_threshold:.4f}) -> Fast abstention."
-        )
-        return {
-            "answer": safe_fallback,
-            "sources": [
-                {
-                    "chunk_id": c["chunk_id"],
-                    "score": c.get("score", 0.0),
-                    "preview": c.get("text", "")[:200].strip(),
-                    "metadata": c.get("metadata", {})
-                }
-                for c in context
-            ],
-            "guard_triggered": True,
-            "guard_reason": f"Low retrieval confidence: {max_score:.4f} < {effective_threshold:.4f}"
-        }
+    if query_key_terms:
+        overlapping_terms = query_key_terms.intersection(context_words)
+        if not overlapping_terms:
+            logger.info(
+                f"[Pre-Gen Guard] No subject overlap (query terms={query_key_terms}) -> Abstaining."
+            )
+            return {
+                "answer": safe_fallback,
+                "sources": [
+                    {
+                        "chunk_id": c["chunk_id"],
+                        "score": c.get("score", 0.0),
+                        "preview": c.get("text", "")[:200].strip(),
+                        "metadata": c.get("metadata", {})
+                    }
+                    for c in context
+                ],
+                "guard_triggered": True,
+                "guard_reason": "No query subject match in retrieved evidence"
+            }
 
     return None
 
 
 def validate_generation(query: str, context: List[Dict[str, Any]], answer_dict: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Post-generation validation:
-    1. Ensures lexical word overlap between generated answer and context passages.
-    2. Enforces localized refusal fallback if hallucination or zero overlap is detected.
+    Tier 2 Post-Generation Grounding Guard:
+    Validates that the generated answer is grounded in retrieved context and not a hallucination.
     """
     safe_fallback = get_localized_abstention(query)
     
-    # 1. Empty context fallback
     if not context:
         return {
             "answer": safe_fallback,
@@ -86,33 +111,34 @@ def validate_generation(query: str, context: List[Dict[str, Any]], answer_dict: 
         
     answer_text = answer_dict.get("answer", "").strip()
     
-    # 2. Refusal keywords bypass
+    # Refusal keywords bypass
     refusal_keywords = {
         "sorry", "insufficient", "पर्याप्त", "जानकारी", "सॉरी", "reliably", 
-        "not have enough information", "डोंट हैव इनफ", "उपलब्ध स्रोतों"
+        "not have enough information", "डोंट हैव इनफ", "उपलब्ध स्रोतों", "विश्वसनीय उत्तर"
     }
     is_refusal = any(kw in answer_text.lower() for kw in refusal_keywords)
     
     if not is_refusal:
-        # Extract meaningful terms from context and answer
-        context_words = set()
-        for chunk in context:
-            words = [
-                w.strip() 
-                for w in re.sub(r'[।॥\|!\?\.,;:\(\)"\'\-\n\r\t]', ' ', chunk.get("text", "").lower()).split() 
-                if len(w) > 2
-            ]
-            context_words.update(words)
-            
-        answer_words = [
+        # Extract meaningful terms from context (including transliterated equivalents)
+        context_text = " ".join(chunk.get("text", "") for chunk in context)
+        expanded_context = expand_indic_query(context_text)
+        context_words = set(
             w.strip() 
-            for w in re.sub(r'[।॥\|!\?\.,;:\(\)"\'\-\n\r\t]', ' ', answer_text.lower()).split() 
-            if len(w) > 2
-        ]
+            for w in re.sub(r'[।॥\|!\?\.,;:\(\)\"\'\-\n\r\t]', ' ', expanded_context.lower()).split() 
+            if len(w) > 2 and w not in GENERIC_STOP_WORDS
+        )
         
-        overlap = [w for w in answer_words if w in context_words]
+        # Extract meaningful terms from generated answer (including transliterated equivalents)
+        expanded_answer = expand_indic_query(answer_text)
+        answer_words = set(
+            w.strip() 
+            for w in re.sub(r'[।॥\|!\?\.,;:\(\)\"\'\-\n\r\t]', ' ', expanded_answer.lower()).split() 
+            if len(w) > 2 and w not in GENERIC_STOP_WORDS
+        )
         
-        # If zero overlap detected for non-refusal answer, trigger fallback
+        overlap = answer_words.intersection(context_words)
+        
+        # If less than 1 key term overlaps, flag as potential hallucination
         if len(overlap) < 1:
             logger.warning("Grounding guard: Zero lexical overlap with context (potential hallucination).")
             return {
