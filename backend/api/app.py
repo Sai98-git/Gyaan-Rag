@@ -63,7 +63,7 @@ def resolve_index_directory(strategy: str, index_type: str) -> Optional[Path]:
     Robustly locates the precomputed index directory across local dev, 
     production workspace, and Vercel serverless /var/task runtime environments.
     """
-    target_filename = "embeddings.npy" if index_type == "dense" else "bm25_index.json"
+    target_filenames = ["embeddings.npy"] if index_type == "dense" else ["bm25_index.json", "bm25_index.json.gz"]
     
     # 1. Direct candidate paths
     candidate_dirs = [
@@ -74,23 +74,25 @@ def resolve_index_directory(strategy: str, index_type: str) -> Optional[Path]:
     ]
     
     for candidate in candidate_dirs:
-        if (candidate / target_filename).exists():
-            logger.info(f"Resolved {index_type} index at: {candidate}")
-            return candidate
+        for tf in target_filenames:
+            if (candidate / tf).exists():
+                logger.info(f"Resolved {index_type} index at: {candidate}")
+                return candidate
             
     # 2. Recursive fallback search
     search_roots = [PROJECT_ROOT, Path.cwd(), Path("/var/task"), Path(__file__).resolve().parent.parent.parent]
     for root in search_roots:
         if root.exists():
             try:
-                for match in root.rglob(target_filename):
-                    found_dir = match.parent
-                    logger.info(f"Resolved {index_type} index via recursive search at: {found_dir}")
-                    return found_dir
+                for tf in target_filenames:
+                    for match in root.rglob(tf):
+                        found_dir = match.parent
+                        logger.info(f"Resolved {index_type} index via recursive search at: {found_dir}")
+                        return found_dir
             except Exception as e:
                 logger.debug(f"Search in {root} failed: {e}")
                 
-    logger.error(f"Could not locate {target_filename} in any candidate or search location.")
+    logger.error(f"Could not locate {target_filenames} in any candidate or search location.")
     return None
 
 def init_rag_resources():

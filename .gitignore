@@ -36,6 +36,8 @@ ENV/
 data/indexes/*
 !data/indexes/semantic/
 !data/indexes/semantic/**
+data/indexes/semantic/bm25/bm25_index.json
+data/indexes/semantic/dense/metadata.json
 
 # ============================================================
 # Cache directories

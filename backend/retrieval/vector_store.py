@@ -52,18 +52,33 @@ class NumpyVectorStore:
         logger.info(f"Vector index saved successfully to: {directory}")
 
     def load(self, directory: str) -> bool:
-        """Loads the index from the given directory. Returns True if successful, False otherwise."""
+        """Loads the index from the given directory. Supports metadata.json and metadata.json.gz."""
+        import gzip
         embeddings_path = os.path.join(directory, "embeddings.npy")
         metadata_path = os.path.join(directory, "metadata.json")
+        metadata_gz_path = os.path.join(directory, "metadata.json.gz")
         
-        if not os.path.exists(embeddings_path) or not os.path.exists(metadata_path):
+        target_meta = None
+        is_gz = False
+        if os.path.exists(metadata_gz_path):
+            target_meta = metadata_gz_path
+            is_gz = True
+        elif os.path.exists(metadata_path):
+            target_meta = metadata_path
+            is_gz = False
+        
+        if not os.path.exists(embeddings_path) or target_meta is None:
             logger.warning(f"Vector index files not found in: {directory}")
             return False
             
         try:
             self.embeddings = np.load(embeddings_path)
-            with open(metadata_path, "r", encoding="utf-8") as f:
-                self.chunks_metadata = json.load(f)
+            if is_gz:
+                with gzip.open(target_meta, "rt", encoding="utf-8") as f:
+                    self.chunks_metadata = json.load(f)
+            else:
+                with open(target_meta, "r", encoding="utf-8") as f:
+                    self.chunks_metadata = json.load(f)
             logger.info(f"Loaded {len(self.chunks_metadata)} chunks from vector index: {directory}")
             return True
         except Exception as e:
