@@ -1,0 +1,421 @@
+{
+  "summary": {
+    "total_chunks": 1023,
+    "topic_counts": {
+      "india_capital": 17,
+      "corporation_business": 57,
+      "medical_health": 176,
+      "technology_science": 128,
+      "law_government": 122,
+      "geography_places": 304,
+      "finance_economics": 178
+    },
+    "top_content_words": {
+      "करें": 610,
+      "आप": 574,
+      "तक": 478,
+      "साथ": 475,
+      "अपने": 459,
+      "सकता": 394,
+      "जाता": 384,
+      "सकते": 376,
+      "अधिक": 370,
+      "कम": 349,
+      "आपको": 346,
+      "करता": 330,
+      "उपयोग": 329,
+      "यदि": 321,
+      "समय": 293,
+      "कुछ": 288,
+      "वाले": 280,
+      "करते": 272,
+      "आपके": 272,
+      "जब": 266,
+      "करना": 256,
+      "लेकिन": 252,
+      "एस": 252,
+      "डॉलर": 251,
+      "सी": 216,
+      "प्रति": 210,
+      "द्वारा": 207,
+      "पहले": 205,
+      "अन्य": 203,
+      "ही": 203
+    }
+  },
+  "strategies": {
+    "semantic": {
+      "bm25_chunks": 1023,
+      "metadata_chunks": 1023,
+      "embeddings_exist": true,
+      "embeddings_size_kb": 1534.6,
+      "aligned": true
+    },
+    "sliding_window": {
+      "bm25_chunks": 1555,
+      "metadata_chunks": 1555,
+      "embeddings_exist": true,
+      "embeddings_size_kb": 2332.6,
+      "aligned": true
+    },
+    "passage": {
+      "bm25_chunks": 1997,
+      "metadata_chunks": 1997,
+      "embeddings_exist": true,
+      "embeddings_size_kb": 2995.6,
+      "aligned": true
+    }
+  },
+  "discovered_topics": {},
+  "sample_documents": [
+    {
+      "chunk_id": "1102432_semantic_0",
+      "doc_id": "",
+      "token_count": 83,
+      "preview": "एक कंपनी एक विशिष्ट देश में निगमित होती है, अक्सर उस देश के एक छोटे उपसमूह, जैसे कि एक राज्य या प्रांत, की सीमाओं के भीत",
+      "matched_topics": [
+        "corporation_business",
+        "law_government",
+        "geography_places"
+      ]
+    },
+    {
+      "chunk_id": "1102432_semantic_1",
+      "doc_id": "",
+      "token_count": 175,
+      "preview": "आज, 50 देशों से 2,100 से अधिक प्रमाणित बी कोर का एक बढ़ता हुआ समुदाय है और 130 से अधिक उद्योग एक एकीकृत लक्ष्य की दिशा म",
+      "matched_topics": [
+        "corporation_business",
+        "law_government",
+        "geography_places"
+      ]
+    },
+    {
+      "chunk_id": "1102432_semantic_2",
+      "doc_id": "",
+      "token_count": 146,
+      "preview": "मैकडॉनल्ड कॉर्पोरेशन दुनिया के सबसे पहचानने योग्य निगमों में से एक है। एक निगम एक कंपनी या लोगों का समूह है जो एक एकल इक",
+      "matched_topics": [
+        "corporation_business",
+        "law_government"
+      ]
+    },
+    {
+      "chunk_id": "1102432_semantic_3",
+      "doc_id": "",
+      "token_count": 53,
+      "preview": "एक एसोसिएशन उन लोगों का एक संगठित समूह है जो एक साझा रुचि, गतिविधि, या उद्देश्य साझा करते हैं। 1 व्यवसाय शुरू करें अपना ",
+      "matched_topics": [
+        "geography_places"
+      ]
+    },
+    {
+      "chunk_id": "1102432_semantic_4",
+      "doc_id": "",
+      "token_count": 14,
+      "preview": "बी कॉर्प प्रमाणीकरण वैश्विक आंदोलन का नेतृत्व करने वाली कंपनियों पर प्रकाश डालता है।",
+      "matched_topics": [
+        "corporation_business"
+      ]
+    },
+    {
+      "chunk_id": "1102432_semantic_5",
+      "doc_id": "",
+      "token_count": 44,
+      "preview": "एलएलसी आयकर के मामले में अधिक लचीलापन प्रदान करते हैं। 1 एलएलसी के मालिक या सदस्य को तीन तरीकों से आयकर दिया जा सकता है:",
+      "matched_topics": [
+        "geography_places"
+      ]
+    },
+    {
+      "chunk_id": "1102431_semantic_0",
+      "doc_id": "",
+      "token_count": 162,
+      "preview": "पढ़ने के लिए - पुस्तकों के प्रति प्रेम विकसित करें (भले ही यह एक कॉमिक पुस्तक हो) एक तर्क को अनुच्छेदों में व्यवस्थित कर",
+      "matched_topics": [
+        "technology_science",
+        "geography_places"
+      ]
+    },
+    {
+      "chunk_id": "1102431_semantic_1",
+      "doc_id": "",
+      "token_count": 172,
+      "preview": "निबंध की शुरुआत इस कथन से होती है, \"पृथ्वी पर जीवन का इतिहास जीवित चीजों और उनके परिवेश के बीच एक बातचीत रहा है\" (कार्सन",
+      "matched_topics": [
+        "law_government"
+      ]
+    },
+    {
+      "chunk_id": "1102431_semantic_2",
+      "doc_id": "",
+      "token_count": 73,
+      "preview": "कार्सन का मानना है कि जैसे-जैसे मनुष्य अवांछित कीटों और खरपतवारों को खत्म करने की कोशिश करता है, वैसे-वैसे वह वास्तव में",
+      "matched_topics": [
+        "medical_health"
+      ]
+    },
+    {
+      "chunk_id": "1102431_semantic_3",
+      "doc_id": "",
+      "token_count": 146,
+      "preview": "\"द ओब्लिगेशन टू एंड्योर\" साइलेंट स्प्रिंगबी रेचल कार्सन से 1962 का कॉपीराइट रेचल एल कार्सन द्वारा लिखित है।  रेचल कार्सन",
+      "matched_topics": [
+        "technology_science"
+      ]
+    },
+    {
+      "chunk_id": "1102431_semantic_4",
+      "doc_id": "",
+      "token_count": 54,
+      "preview": "रेचल कार्सन का जन्म 27 मई, 1907 को पिट्सबर्ग से एलेघेनी नदी के पास, पेनसिल्वेनिया के स्प्रिंगडेल के पास एक पारिवारिक खेत",
+      "matched_topics": [
+        "geography_places"
+      ]
+    },
+    {
+      "chunk_id": "90836_semantic_0",
+      "doc_id": "",
+      "token_count": 133,
+      "preview": "निम्न सोडियम निम्न पोटेशियम खाद्य पदार्थों की सूची। इस पृष्ठ पर हम स्वस्थ आहार के लिए हजारों खाद्य पदार्थों पर पोषण संबं",
+      "matched_topics": [
+        "medical_health",
+        "finance_economics"
+      ]
+    },
+    {
+      "chunk_id": "90836_semantic_1",
+      "doc_id": "",
+      "token_count": 133,
+      "preview": "ऐसा इसलिए है क्योंकि गुर्दे पोटेशियम को नियंत्रित करते हैं। यदि वे ठीक से काम नहीं कर रहे हैं, तो पोटेशियम को शरीर से ठी",
+      "matched_topics": []
+    },
+    {
+      "chunk_id": "90836_semantic_2",
+      "doc_id": "",
+      "token_count": 61,
+      "preview": "पोटेशियम के खाद्य स्रोत। पोटेशियम के खाद्य स्रोतों को प्रति मानक मात्रा में पोटेशियम के मिलीग्राम के अनुसार दर्ज किया गय",
+      "matched_topics": []
+    },
+    {
+      "chunk_id": "90836_semantic_3",
+      "doc_id": "",
+      "token_count": 145,
+      "preview": "यह रोगों की रोकथाम के लिए महत्वपूर्ण है जैसे कि मधुमेह, हृदय रोग, उच्च कोलेस्ट्रॉल, अरक्तता, उच्च रक्तचाप और कैंसर। खाद्",
+      "matched_topics": [
+        "medical_health"
+      ]
+    },
+    {
+      "chunk_id": "90836_semantic_4",
+      "doc_id": "",
+      "token_count": 60,
+      "preview": "उच्च-रेशा का अर्थ है प्रति हिस्सा 5 ग्राम या उससे अधिक रेशा। एक कम चीनी वाला भोजन प्रति 100 ग्राम या 2.5 ग्राम चीनी प्रत",
+      "matched_topics": []
+    },
+    {
+      "chunk_id": "55665_semantic_0",
+      "doc_id": "",
+      "token_count": 150,
+      "preview": "शिप्ड के माध्यम से नियमित रूप से प्रस्तुत होने वाले शानदार अवसरों का लाभ उठाएं। फ्लैट बॉटम टैंकरों के अलावा, आपको नदी की",
+      "matched_topics": [
+        "corporation_business",
+        "law_government",
+        "geography_places"
+      ]
+    },
+    {
+      "chunk_id": "55665_semantic_1",
+      "doc_id": "",
+      "token_count": 187,
+      "preview": "स्मिथसोनियन गोताखोर जीवों के जैविक आक्रमणों के लिए एक विशाल मालवाहक जहाज के ढाँचे का पता लगाते हैं जो जहाज के ढाँचे पर स",
+      "matched_topics": []
+    },
+    {
+      "chunk_id": "55665_semantic_2",
+      "doc_id": "",
+      "token_count": 175,
+      "preview": "एक्सेस होल्स - जहाज की संरचना में काटे गए छेद जो विभिन्न डिब्बों में प्रवेश या निकास की अनुमति देते हैं। एकोडमॉडेशन लैडर",
+      "matched_topics": [
+        "law_government",
+        "geography_places"
+      ]
+    },
+    {
+      "chunk_id": "55665_semantic_3",
+      "doc_id": "",
+      "token_count": 73,
+      "preview": "मध्य में या पानी के बीच में जहाज के मध्य भाग में लंगर - एक भारी हुक के आकार का उपकरण जहाज को पानी में आराम करने के लिए। ",
+      "matched_topics": [
+        "technology_science"
+      ]
+    },
+    {
+      "chunk_id": "197590_semantic_0",
+      "doc_id": "",
+      "token_count": 165,
+      "preview": "यह हमारी तीन आसानी से प्राप्त करने वाले अनुयायियों को प्राप्त करने के तरीके को समाप्त करता है। सुनिश्चित करें और हमारी अ",
+      "matched_topics": []
+    },
+    {
+      "chunk_id": "287284_semantic_4",
+      "doc_id": "",
+      "token_count": 52,
+      "preview": "ए: यूटा में एक अच्छी तरह से स्थित 3.3 किलोवाट की सौर पी.वी. सरणी प्रति वर्ष लगभग 4,500 किलोवाट-घंटे बिजली का उत्पादन करे",
+      "matched_topics": []
+    },
+    {
+      "chunk_id": "113570_semantic_3",
+      "doc_id": "",
+      "token_count": 104,
+      "preview": "परिभाषाएँ। १ प्रमुख संस्कृति - समाज की प्रमुख संस्कृति से तात्पर्य समाज की मुख्य संस्कृति से है जो बहुसंख्यक आबादी द्वार",
+      "matched_topics": [
+        "technology_science"
+      ]
+    },
+    {
+      "chunk_id": "112025_semantic_1",
+      "doc_id": "",
+      "token_count": 173,
+      "preview": "यह दो सदियों से अधिक समय से फ्रेंच क्वार्टर के केंद्र में है, हालांकि यह हमेशा एक प्रथम श्रेणी का भोजनालय नहीं था। कोर्ट",
+      "matched_topics": [
+        "corporation_business",
+        "geography_places",
+        "finance_economics"
+      ]
+    },
+    {
+      "chunk_id": "330463_semantic_1",
+      "doc_id": "",
+      "token_count": 154,
+      "preview": "प्रथम श्रेणी डाक यू.एस.पी.एस. के माध्यम से वस्तुओं को भेजने का सबसे लोकप्रिय और किफायती तरीका है। आप प्रथम श्रेणी डाक के",
+      "matched_topics": [
+        "technology_science"
+      ]
+    },
+    {
+      "chunk_id": "336352_semantic_2",
+      "doc_id": "",
+      "token_count": 46,
+      "preview": "1 रोमन एटवुड ने अपनी दो बेटों की मदद लेकर अपनी विनम्र पत्नी को डराने के लिए एक जटिल प्रयास किया। 2 एटवुड ने अपने बेटे को",
+      "matched_topics": []
+    },
+    {
+      "chunk_id": "81945_semantic_2",
+      "doc_id": "",
+      "token_count": 150,
+      "preview": "नमस्कार, जब उपयोगकर्ता अपने लॉग-इन क्रेडेंशियल्स का उपयोग करके सिट्रिक्स वेब इंटरफ़ेस में लॉग इन करता है, तो लॉग इन कर स",
+      "matched_topics": [
+        "technology_science",
+        "geography_places"
+      ]
+    },
+    {
+      "chunk_id": "81586_semantic_1",
+      "doc_id": "",
+      "token_count": 53,
+      "preview": "मैंने हमेशा कैंसिल किया हुआ शब्द इस्तेमाल किया है। जब मुझे कोई संदेह होता है, तो मैं हमेशा गूगल में कैंसिल शब्द (या जो भ",
+      "matched_topics": []
+    },
+    {
+      "chunk_id": "185914_semantic_4",
+      "doc_id": "",
+      "token_count": 61,
+      "preview": "यदि आप ऐसी सेवाएँ प्रदान करते हैं जिन्हें नियोक्ता द्वारा नियंत्रित किया जा सकता है (क्या किया जाएगा और कैसे किया जाएगा)",
+      "matched_topics": [
+        "law_government"
+      ]
+    },
+    {
+      "chunk_id": "1060335_semantic_0",
+      "doc_id": "",
+      "token_count": 55,
+      "preview": "बे क्रेस्ट पार्टनर्स बे क्रेस्ट पार्टनर्स, एल.एल.सी. केवल एक एजेंसी दलाल है जो व्यापार निष्पादन, बाजार रणनीति अंतर्दृष्ट",
+      "matched_topics": [
+        "corporation_business",
+        "technology_science"
+      ]
+    },
+    {
+      "chunk_id": "329976_semantic_0",
+      "doc_id": "",
+      "token_count": 191,
+      "preview": "इंटेल एच.डी. ग्राफिक्स 3000 एकीकृत जी.पी.यू. को आधारभूत मात्रा की मेमोरी आवंटित करता है, जो इस बात पर आधारित है कि सिस्ट",
+      "matched_topics": []
+    },
+    {
+      "chunk_id": "66881_semantic_1",
+      "doc_id": "",
+      "token_count": 172,
+      "preview": "यदि आपके कुत्ते या बिल्ली को दौरा पड़ा है, तो यहाँ हम क्या सिफारिश करते हैं: 1. एक अच्छी जाँच। यह सुनिश्चित करने के लिए ",
+      "matched_topics": [
+        "medical_health"
+      ]
+    },
+    {
+      "chunk_id": "294479_semantic_3",
+      "doc_id": "",
+      "token_count": 181,
+      "preview": "एक दिन में 86,400 सेकंड होते हैं। यदि आप प्रति सेकंड 1 अनुरोध संभालते हैं, तो आप प्रति दिन 86,400 अनुरोध संभाल रहे हैं। ",
+      "matched_topics": []
+    },
+    {
+      "chunk_id": "323155_semantic_2",
+      "doc_id": "",
+      "token_count": 157,
+      "preview": "आप जो सटीक राशि का भुगतान करेंगे, वह दो कारकों पर निर्भर करता है: आप किस प्रकार का पासपोर्ट आवेदन जमा कर रहे हैं, और आपक",
+      "matched_topics": [
+        "finance_economics"
+      ]
+    },
+    {
+      "chunk_id": "79375_semantic_1",
+      "doc_id": "",
+      "token_count": 160,
+      "preview": "पार्क: एकलुतना लेक कैंपग्राउंड में 50 शिविर स्थल, पानी, शौचालय, पिकनिक टेबल और आग के गड्ढे हैं। एक अतिप्रवाह शिविर क्षेत",
+      "matched_topics": []
+    },
+    {
+      "chunk_id": "1060251_semantic_6",
+      "doc_id": "",
+      "token_count": 60,
+      "preview": "बडॉप्स एन आर्बर, मिशिगन में स्थित है। यह संगठन मुख्य रूप से वित्तीय सेवाओं के व्यवसाय/उद्योग में व्यवसाय सेवा क्षेत्र मे",
+      "matched_topics": [
+        "geography_places",
+        "finance_economics"
+      ]
+    },
+    {
+      "chunk_id": "69304_semantic_2",
+      "doc_id": "",
+      "token_count": 227,
+      "preview": "2015/2016 कर वर्ष के लिए भत्ता 15,240 पाउंड है, जिसे आप नकद आई.एस.ए., एक निवेश आई.एस.ए. या दोनों के संयोजन में निवेश कर ",
+      "matched_topics": [
+        "finance_economics"
+      ]
+    },
+    {
+      "chunk_id": "342133_semantic_0",
+      "doc_id": "",
+      "token_count": 202,
+      "preview": "3,000 पाउंड वजन के ट्रांसफॉर्मर को सहारा देने के लिए पैड डिज़ाइन किए जाएंगे। ट्रांसफॉर्मर कैबिनेट को सुरक्षित करने के लि",
+      "matched_topics": []
+    },
+    {
+      "chunk_id": "25878_semantic_0",
+      "doc_id": "",
+      "token_count": 135,
+      "preview": "कुछ स्वस्थ खाद्य पदार्थों, जैसे फल या साबुत अनाज, का नकारात्मक आई.एफ. रेटिंग क्यों है? शायद सबसे आम गलतफहमी यह है कि सभी",
+      "matched_topics": [
+        "law_government"
+      ]
+    },
+    {
+      "chunk_id": "174048_semantic_7",
+      "doc_id": "",
+      "token_count": 98,
+      "preview": "आराम के समय रक्तचाप पर व्यायाम आराम के समय रक्तचाप को कम कर सकता है, लेकिन वजन प्रशिक्षण के परिणामस्वरूप आराम के समय रक्",
+      "matched_topics": []
+    }
+  ]
+}
