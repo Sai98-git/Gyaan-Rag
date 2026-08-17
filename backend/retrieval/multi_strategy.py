@@ -2,7 +2,8 @@ import os
 import logging
 from typing import List, Dict, Any, Optional
 from backend.retrieval.bm25 import BM25Retriever
-from backend.retrieval.normalizer import expand_indic_query
+from backend.retrieval.vector_store import NumpyVectorStore
+from backend.retrieval.normalizer import normalize_query_text
 
 logger = logging.getLogger(__name__)
 
@@ -11,110 +12,179 @@ STRATEGIES = ["semantic", "sliding_window", "passage"]
 
 class MultiStrategyRetriever:
     """
-    Orchestrates multi-strategy retrieval across precomputed offline indexes:
-    - Semantic sentence/paragraph chunks
-    - Sliding-window chunks with overlap
-    - Natural passage/document chunks
+    True Dataset-Grounded Hybrid Retriever:
+    Combines Multilingual-E5 Dense Semantic Embeddings + Multi-Strategy BM25
+    across all offline chunking strategies (semantic, sliding-window, passage).
     
-    Applies multilingual Indic-English query expansion and fuses results using
-    Reciprocal Rank Fusion (RRF) with strategy-weighted scoring.
+    Zero hardcoded knowledge, zero manual transliteration maps.
+    Uses Multilingual-E5 representation for cross-lingual English/Hindi/Hinglish retrieval.
     """
     
     def __init__(self, index_base_dir: str):
         self.index_base_dir = index_base_dir
-        self.retrievers: Dict[str, BM25Retriever] = {}
+        self.bm25_retrievers: Dict[str, BM25Retriever] = {}
+        self.vector_stores: Dict[str, NumpyVectorStore] = {}
+        self.embedding_generator = None
         self.loaded = False
 
-    def load(self) -> bool:
-        """Loads BM25 indexes for all precomputed chunking strategies."""
-        loaded_count = 0
+    def load(self, load_dense: bool = True) -> bool:
+        """Loads BM25 and Dense vector indexes across all chunking strategies."""
+        bm25_count = 0
+        dense_count = 0
+
+        # 1. Load BM25 across strategies
         for strategy in STRATEGIES:
             bm25_dir = os.path.join(self.index_base_dir, strategy, "bm25")
             if os.path.isdir(bm25_dir):
                 r = BM25Retriever()
                 if r.load(bm25_dir):
-                    self.retrievers[strategy] = r
-                    loaded_count += 1
-                    logger.info(f"Loaded multi-strategy BM25 index for '{strategy}' ({len(r.chunks)} chunks).")
-                    
-        self.loaded = loaded_count > 0
+                    self.bm25_retrievers[strategy] = r
+                    bm25_count += 1
+
+        # 2. Load Dense Vector Stores
+        if load_dense:
+            for strategy in STRATEGIES:
+                dense_dir = os.path.join(self.index_base_dir, strategy, "dense")
+                if os.path.isdir(dense_dir):
+                    vs = NumpyVectorStore()
+                    if vs.load(dense_dir):
+                        self.vector_stores[strategy] = vs
+                        dense_count += 1
+
+            # Try loading embedding generator for query encoding if dependencies allow
+            try:
+                from backend.retrieval.embeddings import get_embedding_generator
+                self.embedding_generator = get_embedding_generator()
+                logger.info("Dense embedding generator attached to MultiStrategyRetriever.")
+            except Exception as e:
+                logger.warning(f"Dense embedding generator could not be loaded: {e}. Dense retrieval will be skipped if query vectors are not provided.")
+
+        self.loaded = (bm25_count > 0 or dense_count > 0)
+        logger.info(
+            f"MultiStrategyRetriever loaded: BM25 strategies={list(self.bm25_retrievers.keys())}, "
+            f"Dense strategies={list(self.vector_stores.keys())}, Total BM25 chunks={self.total_bm25_chunks}"
+        )
         return self.loaded
 
     @property
     def total_chunks(self) -> int:
-        return sum(len(r.chunks) for r in self.retrievers.values())
+        return self.total_bm25_chunks
 
-    def search(self, query: str, top_k: int = 10, rrf_k: int = 60) -> List[Dict[str, Any]]:
+    @property
+    def total_bm25_chunks(self) -> int:
+        return sum(len(r.chunks) for r in self.bm25_retrievers.values())
+
+    @property
+    def total_dense_chunks(self) -> int:
+        return sum(len(vs.chunks_metadata) for vs in self.vector_stores.values())
+
+    def search(
+        self, 
+        query: str, 
+        top_k: int = 10, 
+        rrf_k: int = 60,
+        dense_weight: float = 1.2,
+        bm25_weight: float = 1.0
+    ) -> List[Dict[str, Any]]:
         """
-        Executes multi-strategy retrieval:
-        1. Expands query with multilingual cross-lingual synonyms.
-        2. Retrieves candidate passages from each chunking strategy.
-        3. Fuses rankings using Reciprocal Rank Fusion (RRF).
-        4. Returns top_k deduplicated, score-normalized evidence passages.
+        Executes hybrid semantic vector + multi-strategy lexical retrieval:
+        1. Normalizes query text (unicode compose, clean whitespace).
+        2. Computes multilingual E5 query embedding (with 'query: ' prefix).
+        3. Retrieves semantic candidates from Dense Vector Stores.
+        4. Retrieves keyword candidates from BM25 indexes across strategies.
+        5. Fuses candidate lists using Reciprocal Rank Fusion (RRF).
+        6. Returns top_k deduplicated evidence passages with exact scoring diagnostics.
         """
-        if not self.loaded or not self.retrievers:
+        if not self.loaded:
             return []
 
-        expanded_query = expand_indic_query(query)
-        logger.debug(f"[MultiStrategy] Query='{query}' -> Expanded='{expanded_query}'")
+        norm_query = normalize_query_text(query)
+        if not norm_query:
+            return []
 
-        # Gather ranked candidates from each strategy
-        strategy_candidates: Dict[str, List[Dict[str, Any]]] = {}
-        for strategy, retriever in self.retrievers.items():
-            # Query with expanded tokens, falling back to raw query if needed
-            res = retriever.search(expanded_query, top_k=top_k * 2)
-            if not res:
-                res = retriever.search(query, top_k=top_k * 2)
-            strategy_candidates[strategy] = res
-
-        # Reciprocal Rank Fusion (RRF)
-        # Weights: semantic (1.2), sliding_window (1.0), passage (1.0)
-        weights = {"semantic": 1.2, "sliding_window": 1.0, "passage": 1.0}
+        candidates_pool: Dict[str, Dict[str, Any]] = {}
         fused_scores: Dict[str, float] = {}
-        chunk_map: Dict[str, Dict[str, Any]] = {}
-        strategy_hits: Dict[str, List[str]] = {}
+        dense_scores_map: Dict[str, float] = {}
+        bm25_scores_map: Dict[str, float] = {}
+        strategy_sources_map: Dict[str, List[str]] = {}
 
-        for strategy, candidates in strategy_candidates.items():
-            w = weights.get(strategy, 1.0)
-            for rank, item in enumerate(candidates):
-                cid = item["chunk_id"]
-                rrf_score = w / (rrf_k + rank + 1)
-                fused_scores[cid] = fused_scores.get(cid, 0.0) + rrf_score
+        # ── 1. Dense Semantic Retrieval via Multilingual-E5 ──
+        if self.vector_stores and self.embedding_generator:
+            try:
+                q_emb = self.embedding_generator.embed_query(norm_query)
+                for strategy, vs in self.vector_stores.items():
+                    dense_hits = vs.search(q_emb, top_k=top_k * 2)
+                    for rank, hit in enumerate(dense_hits):
+                        cid = hit["chunk_id"]
+                        d_score = hit.get("score", 0.0)
+                        dense_scores_map[cid] = max(dense_scores_map.get(cid, 0.0), d_score)
+                        
+                        # Dense RRF contribution
+                        dense_rrf = dense_weight / (rrf_k + rank + 1)
+                        fused_scores[cid] = fused_scores.get(cid, 0.0) + dense_rrf
+                        
+                        if cid not in candidates_pool:
+                            candidates_pool[cid] = hit
+                            strategy_sources_map[cid] = []
+                        if f"dense_{strategy}" not in strategy_sources_map[cid]:
+                            strategy_sources_map[cid].append(f"dense_{strategy}")
+            except Exception as e:
+                logger.error(f"[MultiStrategy] Dense search error: {e}")
+
+        # ── 2. Multi-Strategy BM25 Retrieval ──
+        strategy_weights = {"semantic": 1.2, "sliding_window": 1.0, "passage": 1.0}
+        for strategy, retriever in self.bm25_retrievers.items():
+            bm25_hits = retriever.search(norm_query, top_k=top_k * 2)
+            strat_w = strategy_weights.get(strategy, 1.0) * bm25_weight
+            for rank, hit in enumerate(bm25_hits):
+                cid = hit["chunk_id"]
+                b_score = hit.get("score", 0.0)
+                bm25_scores_map[cid] = max(bm25_scores_map.get(cid, 0.0), b_score)
                 
-                if cid not in chunk_map:
-                    chunk_map[cid] = item
-                    strategy_hits[cid] = []
-                strategy_hits[cid].append(strategy)
+                # BM25 RRF contribution
+                bm25_rrf = strat_w / (rrf_k + rank + 1)
+                fused_scores[cid] = fused_scores.get(cid, 0.0) + bm25_rrf
+                
+                if cid not in candidates_pool:
+                    candidates_pool[cid] = hit
+                    strategy_sources_map[cid] = []
+                if f"bm25_{strategy}" not in strategy_sources_map[cid]:
+                    strategy_sources_map[cid].append(f"bm25_{strategy}")
 
         if not fused_scores:
             return []
 
-        # Sort by fused RRF score
+        # Sort candidates by combined fused RRF score
         sorted_cids = sorted(fused_scores.keys(), key=lambda c: fused_scores[c], reverse=True)[:top_k]
-
-        # Normalize top score
         max_rrf = max(fused_scores.values()) if fused_scores else 1.0
-        
+
         fused_results = []
         for cid in sorted_cids:
-            chunk = chunk_map[cid]
+            chunk = candidates_pool[cid]
             norm_score = fused_scores[cid] / max_rrf if max_rrf > 0 else 0.0
+            d_sc = dense_scores_map.get(cid, 0.0)
+            b_sc = bm25_scores_map.get(cid, 0.0)
             
             fused_results.append({
                 "chunk_id": chunk["chunk_id"],
                 "text": chunk["text"],
                 "score": round(norm_score, 4),
-                "raw_rrf_score": round(fused_scores[cid], 5),
-                "retrieval_method": "multi_strategy_bm25_rrf",
-                "strategy_hits": strategy_hits.get(cid, []),
+                "rrf_score": round(fused_scores[cid], 5),
+                "dense_score": round(d_sc, 4),
+                "bm25_score": round(b_sc, 4),
+                "retrieval_method": "hybrid_dense_bm25_rrf",
+                "strategy_hits": strategy_sources_map.get(cid, []),
                 "metadata": {
                     **chunk.get("metadata", {}),
-                    "chunk_strategy_sources": strategy_hits.get(cid, [])
+                    "dense_similarity": round(d_sc, 4),
+                    "bm25_relevance": round(b_sc, 4),
+                    "strategy_sources": strategy_sources_map.get(cid, [])
                 }
             })
 
         logger.info(
-            f"[MultiStrategy] Retrieved {len(fused_results)} fused chunks. "
-            f"Top score={fused_results[0]['score']:.4f}, Strategies active={list(self.retrievers.keys())}"
+            f"[MultiStrategy] Query='{query}' -> {len(fused_results)} fused chunks. "
+            f"Top RRF={fused_results[0]['rrf_score']:.4f}, Top Dense={fused_results[0]['dense_score']:.4f}, "
+            f"Top BM25={fused_results[0]['bm25_score']:.4f}"
         )
         return fused_results

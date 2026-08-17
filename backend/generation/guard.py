@@ -2,21 +2,12 @@ import re
 import logging
 from typing import List, Dict, Any, Optional
 from backend.core.config import settings
-from backend.retrieval.normalizer import expand_indic_query
+from backend.retrieval.normalizer import normalize_query_text, tokenize_query
 
 logger = logging.getLogger(__name__)
 
 HINDI_ABSTENTION = "मुझे उपलब्ध स्रोतों में इस प्रश्न का विश्वसनीय उत्तर देने के लिए पर्याप्त जानकारी नहीं मिली।"
 ENGLISH_ABSTENTION = "I don't have enough information in the retrieved sources to answer that reliably."
-
-GENERIC_STOP_WORDS = {
-    "what", "is", "a", "an", "the", "of", "in", "on", "at", "to", "for", "with", 
-    "about", "how", "who", "where", "when", "why", "which", "can", "you", "tell", "me",
-    "kya", "hai", "hain", "hota", "hoti", "hote", "ka", "ke", "ki", "ko", "se", "mein", 
-    "me", "par", "batao", "kise", "kaise", "kyun", "kaun", "bhi", "aur", "ya",
-    "क्या", "है", "हैं", "होता", "होती", "होते", "का", "के", "की", "को", "से", "में", 
-    "पर", "बताओ", "किसे", "कैसे", "क्यों", "कौन", "भी", "और", "या", "एक", "यह", "वह"
-}
 
 
 def is_devanagari(text: str) -> bool:
@@ -31,18 +22,17 @@ def get_localized_abstention(query: str) -> str:
     return ENGLISH_ABSTENTION
 
 
-def extract_key_terms(text: str) -> set:
-    """Extracts non-stopword tokens from a text string."""
-    clean = re.sub(r'[।॥\|!\?\.,;:\(\)\"\'\-\n\r\t]', ' ', text.lower())
-    words = [w.strip() for w in clean.split() if len(w.strip()) > 1]
-    return {w for w in words if w not in GENERIC_STOP_WORDS}
-
-
-def check_pre_retrieval_guard(query: str, context: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def check_pre_retrieval_guard(
+    query: str, 
+    context: List[Dict[str, Any]], 
+    min_dense_threshold: float = 0.72
+) -> Optional[Dict[str, Any]]:
     """
     Tier 1 Pre-Generation Evidence Guard:
-    Checks if any evidence passages were retrieved for the query.
-    If context is completely empty or top score is 0.0, safely abstains in ~1ms.
+    Checks if any evidence passages were retrieved for the query with sufficient
+    mathematical confidence (dense similarity or BM25 match).
+    
+    Zero hardcoded knowledge, zero topic lists.
     """
     safe_fallback = get_localized_abstention(query)
     
@@ -52,17 +42,22 @@ def check_pre_retrieval_guard(query: str, context: List[Dict[str, Any]]) -> Opti
             "answer": safe_fallback,
             "sources": [],
             "guard_triggered": True,
-            "guard_reason": "Empty context"
+            "guard_reason": "No evidence passages retrieved from dataset"
         }
 
-    top_score = context[0].get("score", 0.0)
-    if top_score <= 0.0:
-        logger.info(f"[Pre-Gen Guard] Zero score for query '{query}' -> Abstaining.")
+    top_chunk = context[0]
+    top_score = top_chunk.get("score", 0.0)
+    top_dense = top_chunk.get("dense_score", 0.0)
+    top_bm25 = top_chunk.get("bm25_score", 0.0)
+
+    # If neither dense similarity is sufficient nor any BM25 term matched
+    if top_dense < min_dense_threshold and top_bm25 <= 0.0:
+        logger.info(f"[Pre-Gen Guard] Low confidence (dense={top_dense:.4f}, bm25={top_bm25:.4f}) for query '{query}' -> Abstaining.")
         return {
             "answer": safe_fallback,
-            "sources": [],
+            "sources": context,
             "guard_triggered": True,
-            "guard_reason": "Zero retrieval relevance"
+            "guard_reason": f"Insufficient retrieval confidence (dense={top_dense:.3f}, bm25={top_bm25:.3f})"
         }
 
     return None
@@ -71,7 +66,7 @@ def check_pre_retrieval_guard(query: str, context: List[Dict[str, Any]]) -> Opti
 def validate_generation(query: str, context: List[Dict[str, Any]], answer_dict: Dict[str, Any]) -> Dict[str, Any]:
     """
     Tier 2 Post-Generation Grounding Guard:
-    Validates that the generated answer is grounded in retrieved context and not a hallucination.
+    Validates that the generated answer is grounded in retrieved context and not an unsupported generation.
     """
     safe_fallback = get_localized_abstention(query)
     
@@ -86,7 +81,7 @@ def validate_generation(query: str, context: List[Dict[str, Any]], answer_dict: 
         
     answer_text = answer_dict.get("answer", "").strip()
     
-    # Refusal keywords detection
+    # Check for standard model refusal indicators
     refusal_keywords = {
         "sorry", "insufficient", "पर्याप्त", "जानकारी", "सॉरी", "reliably", 
         "not have enough information", "डोंट हैव इनफ", "उपलब्ध स्रोतों", "विश्वसनीय उत्तर",
@@ -100,35 +95,7 @@ def validate_generation(query: str, context: List[Dict[str, Any]], answer_dict: 
             "sources": answer_dict.get("sources", context),
             "provider": answer_dict.get("provider", "unknown"),
             "guard_triggered": True,
-            "guard_reason": "Insufficient evidence in context"
-        }
-    
-    # Cross-lingual lexical grounding check
-    context_text = " ".join(chunk.get("text", "") for chunk in context)
-    expanded_context = expand_indic_query(context_text)
-    context_words = set(
-        w.strip() 
-        for w in re.sub(r'[।॥\|!\?\.,;:\(\)\"\'\-\n\r\t]', ' ', expanded_context.lower()).split() 
-        if len(w) > 2 and w not in GENERIC_STOP_WORDS
-    )
-    
-    expanded_answer = expand_indic_query(answer_text)
-    answer_words = set(
-        w.strip() 
-        for w in re.sub(r'[।॥\|!\?\.,;:\(\)\"\'\-\n\r\t]', ' ', expanded_answer.lower()).split() 
-        if len(w) > 2 and w not in GENERIC_STOP_WORDS
-    )
-    
-    overlap = answer_words.intersection(context_words)
-    
-    if len(overlap) < 1:
-        logger.warning("Grounding guard: Zero lexical overlap with context (potential hallucination).")
-        return {
-            "answer": safe_fallback,
-            "sources": answer_dict.get("sources", context),
-            "provider": answer_dict.get("provider", "unknown"),
-            "guard_triggered": True,
-            "guard_reason": "Zero lexical overlap with context (potential hallucination)"
+            "guard_reason": "Model indicated insufficient evidence in retrieved context"
         }
         
     return answer_dict

@@ -1,40 +1,65 @@
 import sys
-import logging
-sys.stdout.reconfigure(encoding='utf-8')
-logging.disable(logging.CRITICAL)
+import os
+import json
 
-from backend.core.config import settings
-from backend.retrieval.embeddings import get_embedding_generator
-from backend.retrieval.vector_store import NumpyVectorStore
+if sys.platform.startswith("win"):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        pass
 
-vec = NumpyVectorStore()
-loaded = vec.load('data/indexes/semantic/dense')
-print(f"Index loaded: {loaded}, total chunks: {len(vec.chunks_metadata)}")
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
-eg = get_embedding_generator()
+from backend.retrieval.multi_strategy import MultiStrategyRetriever
+from backend.generation.guard import check_pre_retrieval_guard
 
-q = 'What was the immediate impact of the success of the Manhattan Project?'
-emb = eg.embed_query(q)
-results = vec.search(emb, top_k=5)
+def inspect_query(query: str):
+    print("=" * 80)
+    print(f"QUERY: \"{query}\"")
+    print("=" * 80)
 
-print('=== TOP 5 RETRIEVED CHUNKS for Manhattan Project query ===')
-for i, r in enumerate(results):
-    score = r["score"]
-    chunk_id = r["chunk_id"]
-    text = r.get("text") or r.get("metadata", {}).get("text", "NO TEXT")
-    print(f"--- Rank {i+1} | score={score:.4f} | chunk_id={chunk_id}")
-    print("TEXT:", text[:250])
-    print()
+    msr = MultiStrategyRetriever(os.path.join(PROJECT_ROOT, "data", "indexes"))
+    msr.load(load_dense=True)
 
-print()
-print('=== TOP 3 RETRIEVED CHUNKS for corporation query ===')
-q2 = 'corporation'
-emb2 = eg.embed_query(q2)
-results2 = vec.search(emb2, top_k=3)
-for i, r in enumerate(results2):
-    score = r["score"]
-    chunk_id = r["chunk_id"]
-    text = r.get("text") or r.get("metadata", {}).get("text", "NO TEXT")
-    print(f"--- Rank {i+1} | score={score:.4f} | chunk_id={chunk_id}")
-    print("TEXT:", text[:200])
-    print()
+    results = msr.search(query, top_k=5)
+    
+    if not results:
+        print("\n❌ NO CANDIDATE PASSAGES RETRIEVED (Empty context)")
+        print("Guard Decision: ABSTAIN (No candidates)")
+        return
+
+    print(f"\nRetrieved {len(results)} Evidence Passages:\n")
+    for i, hit in enumerate(results, 1):
+        cid = hit.get("chunk_id", "unknown")
+        txt = hit.get("text", "").replace("\n", " ")
+        b_sc = hit.get("bm25_score", 0.0)
+        d_sc = hit.get("dense_score", 0.0)
+        r_sc = hit.get("rrf_score", 0.0)
+        sources = ", ".join(hit.get("strategy_hits", []))
+
+        print(f"--- Retrieved #{i} ---")
+        print(f"ID     : {cid}")
+        print(f"Text   : {txt[:140]}...")
+        print(f"BM25   : {b_sc:.4f}")
+        print(f"Dense  : {d_sc:.4f}")
+        print(f"RRF    : {r_sc:.5f}")
+        print(f"Sources: {sources}")
+        print()
+
+    guard_decision = check_pre_retrieval_guard(query, results)
+    if guard_decision:
+        print("🛡️ Pre-Gen Guard Decision: ABSTAIN")
+        print(f"   Reason: {guard_decision.get('guard_reason')}")
+        print(f"   Fallback Output: \"{guard_decision.get('answer')}\"")
+    else:
+        print("✅ Pre-Gen Guard Decision: ALLOW GENERATION (Sufficient Evidence Present)")
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        q = " ".join(sys.argv[1:])
+    else:
+        q = "What is a corporation?"
+    inspect_query(q)

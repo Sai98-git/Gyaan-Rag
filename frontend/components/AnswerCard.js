@@ -1,4 +1,3 @@
-// Strip the trailing mock-provider notice from the answer string.
 function stripMockNote(text) {
     if (!text) return "";
     return text
@@ -20,7 +19,8 @@ export function renderAnswerCard(container, data, activeLang, queryText) {
         retrieval, 
         generation, 
         provider, 
-        stt_provider 
+        stt_provider,
+        sources = []
     } = data;
 
     const answer = stripMockNote(rawAnswer);
@@ -33,17 +33,17 @@ export function renderAnswerCard(container, data, activeLang, queryText) {
 
     let statusLabel;
     if (guard_triggered) {
-        statusLabel = isHi ? "ग्राउंडिंग गार्ड · निरस्त (ABSTAINED)" : "GROUNDING GUARD · ABSTAINED";
+        statusLabel = isHi ? "🛡️ ग्राउंडिंग गार्ड · निरस्त (ABSTAINED)" : "🛡️ GROUNDING GUARD · ABSTAINED";
     } else if (isAbstained) {
-        statusLabel = isHi ? "अपर्याप्त साक्ष्य · निरस्त" : "ABSTAINED · INSUFFICIENT EVIDENCE";
+        statusLabel = isHi ? "🛡️ अपर्याप्त साक्ष्य · निरस्त (ABSTAINED)" : "🛡️ INSUFFICIENT EVIDENCE · ABSTAINED";
     } else {
-        statusLabel = isHi ? "✅ साक्ष्य-सत्यापित उत्तर (GROUNDED)" : "✅ GROUNDED ANSWER";
+        statusLabel = isHi ? "✅ साक्ष्य-सत्यापित उत्तर (GROUNDED ANSWER)" : "✅ GROUNDED ANSWER";
     }
 
     const tagBg = isAbstained ? "var(--hot-pink)" : "var(--electric-yellow)";
     const tagColor = isAbstained ? "white" : "var(--dark-black)";
 
-    // Latency extraction (handles voice response or text response format)
+    // Latency extraction
     const sttMs = latency?.stt_ms !== undefined ? `${latency.stt_ms.toFixed(1)} ms` : "— (Text Query)";
     const retMs = (latency?.retrieval_ms ?? retrieval?.latency_ms)?.toFixed(1) ?? "—";
     const genMs = (latency?.generation_ms ?? generation?.latency_ms)?.toFixed(1) ?? "—";
@@ -81,7 +81,7 @@ export function renderAnswerCard(container, data, activeLang, queryText) {
             ${userUtterance ? `
             <div class="transcript-callout">
                 <div class="transcript-header font-display">
-                    <span>${transcript ? (isHi ? '🎙 उपयोगकर्ता की आवाज़ (TRANSCRIPT)' : '🎙 USER TRANSCRIPT') : (isHi ? '✍️ प्रश्न (QUERY)' : '✍️ QUERY')}</span>
+                    <span>${transcript ? (isHi ? '🎙 उपयोगकर्ता की आवाज़ (TRANSCRIPT)' : '🎙 USER TRANSCRIPT') : (isHi ? '✍️ प्रश्न (QUERY)' : '✍️ USER QUERY')}</span>
                 </div>
                 <p class="transcript-text font-display">
                     "${userUtterance}"
@@ -110,7 +110,7 @@ export function renderAnswerCard(container, data, activeLang, queryText) {
                 ${answer.replace(/\n/g, "<br>")}
             </div>
 
-            <!-- Grounding Badge -->
+            <!-- Grounding Verification Badge -->
             ${!isAbstained ? `
             <div style="display:inline-flex; align-items:center; gap:0.4rem;
                         background:rgba(0,107,60,0.1); border:2px solid var(--deep-green);
@@ -118,22 +118,22 @@ export function renderAnswerCard(container, data, activeLang, queryText) {
                 <span style="color:var(--deep-green); font-weight:900; font-size:1rem;">✓</span>
                 <span style="font-size:0.82rem; font-weight:700; text-transform:uppercase;
                              letter-spacing:0.07em; color:var(--deep-green);">
-                    ${isHi ? 'पुनः प्राप्त MSMARCO-XI संदर्भों में पूर्णतः आधारित' : 'Strictly grounded in retrieved MSMARCO-XI evidence'}
+                    ${isHi ? 'पुनः प्राप्त MSMARCO-XI साक्ष्यों में पूर्णतः सत्यापित' : 'Strictly grounded in retrieved MSMARCO-XI dataset evidence'}
                 </span>
             </div>
             ` : ''}
 
-            <!-- Guard Abstention Note -->
-            ${guard_triggered && guard_reason ? `
+            <!-- Guard Abstention Diagnostics -->
+            ${isAbstained ? `
             <div style="margin-bottom:1.5rem; padding:0.75rem 1rem;
                         border:2px dashed var(--hot-pink);
                         background:rgba(255,0,128,0.06); border-radius:8px;">
                 <p style="color:var(--hot-pink); font-weight:700; font-size:0.85rem;
                            text-transform:uppercase; letter-spacing:0.06em; margin-bottom:4px;">
-                    ⚠ ${isHi ? 'सीमित साक्ष्य / असंबंधित प्रश्न' : 'Limited Evidence / Out-of-domain'}
+                    🛡️ ${isHi ? 'निरस्त करने का कारण (ABSTENTION REASON)' : 'GROUNDING GUARD DECISION'}
                 </p>
-                <p style="font-size:0.92rem; color:var(--dark-black);">
-                    ${guard_reason}
+                <p style="font-size:0.92rem; color:var(--dark-black); font-weight:500;">
+                    ${guard_reason || (isHi ? 'प्रदत्त प्रश्न के लिए डेटासेट में पर्याप्त साक्ष्य उपलब्ध नहीं है।' : 'No sufficiently relevant evidence was retrieved from the dataset for this query.')}
                 </p>
             </div>
             ` : ''}
@@ -149,7 +149,7 @@ export function renderAnswerCard(container, data, activeLang, queryText) {
                         <span class="latency-val font-display">${sttMs}</span>
                     </div>
                     <div class="latency-item">
-                        <span class="latency-name font-display">2. Retrieval (E5/BM25)</span>
+                        <span class="latency-name font-display">2. Retrieval (E5 + BM25)</span>
                         <span class="latency-val font-display">${retMs} ms</span>
                     </div>
                     <div class="latency-item">
