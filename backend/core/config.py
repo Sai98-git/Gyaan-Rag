@@ -1,5 +1,6 @@
 import os
-from typing import Optional
+from typing import Optional, Any, Dict
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -32,7 +33,7 @@ class Settings(BaseSettings):
     SPARSE_WEIGHT: float = 0.5
 
     # Generation Configuration Settings
-    GENERATION_PROVIDER: str = "mock"  # "mock" or "sarvam"
+    GENERATION_PROVIDER: str = "sarvam"  # "mock" or "sarvam"
     SARVAM_API_KEY: Optional[str] = None
     SARVAM_MODEL: str = "sarvam-105b"
     MIN_RETRIEVAL_SCORE: float = 0.78  # Grounding confidence threshold (below min observed positive 0.7987)
@@ -42,5 +43,22 @@ class Settings(BaseSettings):
     SARVAM_STT_MODEL: str = "saaras:v3"
     ELEVENLABS_API_KEY: Optional[str] = None
     STT_TIMEOUT_SECONDS: float = 15.0
+
+    @model_validator(mode="before")
+    @classmethod
+    def clean_empty_strings(cls, values: Any) -> Any:
+        """
+        Vercel and serverless environments frequently inject empty string values (e.g. KEY="")
+        for unset optional environment variables. This validator filters out empty/whitespace
+        strings so that type-coercion (int, float) doesn't fail and default values are preserved.
+        """
+        if isinstance(values, dict):
+            cleaned: Dict[str, Any] = {}
+            for k, v in values.items():
+                if isinstance(v, str) and v.strip() == "":
+                    continue  # Ignore empty string, use model field default
+                cleaned[k] = v
+            return cleaned
+        return values
 
 settings = Settings()

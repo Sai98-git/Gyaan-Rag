@@ -30,13 +30,20 @@ def validate_generation(query: str, context: List[Dict[str, Any]], answer_dict: 
             "guard_reason": "Empty context"
         }
         
-    # Check 2: Max retrieval score check
+    # Check 2: Max retrieval score check (method-aware)
     max_score = max(chunk.get("score", 0.0) for chunk in context)
-    logger.info(f"Grounding guard: max_score={max_score:.4f}, threshold={settings.MIN_RETRIEVAL_SCORE:.4f}")
-    if max_score < settings.MIN_RETRIEVAL_SCORE:
+    retrieval_method = context[0].get("retrieval_method", "dense") if context else "dense"
+    effective_threshold = settings.MIN_RETRIEVAL_SCORE if retrieval_method == "dense" else 1.0
+
+    logger.info(
+        f"Grounding guard: max_score={max_score:.4f}, method='{retrieval_method}', "
+        f"threshold={effective_threshold:.4f}"
+    )
+
+    if max_score < effective_threshold:
         logger.warning(
             f"Grounding guard triggered: Max retrieval score ({max_score:.4f}) "
-            f"is below MIN_RETRIEVAL_SCORE ({settings.MIN_RETRIEVAL_SCORE:.4f})."
+            f"is below threshold ({effective_threshold:.4f}) for method '{retrieval_method}'."
         )
         return {
             "answer": safe_fallback,
@@ -51,7 +58,7 @@ def validate_generation(query: str, context: List[Dict[str, Any]], answer_dict: 
             ],
             "provider": answer_dict.get("provider", "unknown"),
             "guard_triggered": True,
-            "guard_reason": f"Low retrieval confidence: {max_score:.4f} < {settings.MIN_RETRIEVAL_SCORE:.4f}"
+            "guard_reason": f"Low retrieval confidence: {max_score:.4f} < {effective_threshold:.4f}"
         }
         
     # Check 3: Lexical overlap check (to ensure answer references retrieved text content)
