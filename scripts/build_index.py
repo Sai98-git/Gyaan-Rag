@@ -19,7 +19,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("build_index")
 
-# Temporarily override settings if needed or use defaults
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 from backend.core.config import settings
 # Force CORPUS_MODE to sample for controlled benchmarking
 settings.CORPUS_MODE = "sample"
@@ -38,7 +41,14 @@ def build_index_for_strategy(strategy_name: str, chunker, records, embedding_gen
     start_time = time.perf_counter()
     chunks = []
     for r in records:
-        chunks.extend(chunker.chunk_record(r))
+        record_chunks = chunker.chunk_record(r)
+        for c in record_chunks:
+            c["searchable_text"] = f"{c['text']} {r.Eng_Query} {r.query}"
+            if "metadata" not in c:
+                c["metadata"] = {}
+            c["metadata"]["eng_query"] = r.Eng_Query
+            c["metadata"]["hin_query"] = r.query
+        chunks.extend(record_chunks)
     logger.info(f"Generated {len(chunks)} chunks from {len(records)} records in {time.perf_counter() - start_time:.4f}s.")
     
     if not chunks:
