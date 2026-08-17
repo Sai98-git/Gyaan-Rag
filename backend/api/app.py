@@ -222,7 +222,24 @@ def _execute_rag_pipeline(query: str) -> Dict[str, Any]:
 
     retrieval_latency = (time.perf_counter() - t0) * 1000
 
-    # 2. Generation Provider Selection
+    # 2. Fast Pre-Generation Abstention Guard Check
+    from backend.generation.guard import check_pre_retrieval_guard
+    pre_guard = check_pre_retrieval_guard(query, retrieved_chunks)
+    if pre_guard is not None:
+        logger.info(f"[Fast Guard] Abstaining before LLM invocation: {pre_guard['guard_reason']}")
+        return {
+            "answer": pre_guard["answer"],
+            "sources": pre_guard.get("sources", []),
+            "retrieval_latency": retrieval_latency,
+            "generation_latency": 0.0,
+            "retrieval_method": retrieval_method,
+            "provider": settings.GENERATION_PROVIDER,
+            "guard_triggered": True,
+            "guard_reason": pre_guard.get("guard_reason"),
+            "chunks_count": len(retrieved_chunks)
+        }
+
+    # 3. Generation Provider Selection
     provider_name = settings.GENERATION_PROVIDER.lower()
     t0 = time.perf_counter()
 
@@ -235,7 +252,7 @@ def _execute_rag_pipeline(query: str) -> Dict[str, Any]:
 
     candidate_response = generator.generate(query, retrieved_chunks)
 
-    # 3. Grounding Guard
+    # 4. Grounding Guard
     try:
         final_response = validate_generation(query, retrieved_chunks, candidate_response)
         guard_triggered = final_response.get("guard_triggered", False)

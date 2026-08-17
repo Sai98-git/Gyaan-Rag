@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     # Generation Configuration Settings
     GENERATION_PROVIDER: str = "sarvam"  # "mock" or "sarvam"
     SARVAM_API_KEY: Optional[str] = None
-    SARVAM_MODEL: str = "sarvam-105b"
+    SARVAM_MODEL: str = "sarvam-105b-conversations"
     MIN_RETRIEVAL_SCORE: float = 0.78  # Grounding confidence threshold (below min observed positive 0.7987)
 
     # Voice / Speech-to-Text Configuration Settings
