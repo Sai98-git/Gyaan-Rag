@@ -465,6 +465,8 @@ async def handle_voice(
 
 
 # ─── Health & Diagnostics ────────────────────────────────────────────────────
+@app.get("/", tags=["ops"])
+@app.get("/api", tags=["ops"])
 @app.get("/health", tags=["ops"])
 @app.get("/api/health", tags=["ops"])
 @app.get("/api/index.py/health", tags=["ops"])
