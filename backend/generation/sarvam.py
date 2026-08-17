@@ -4,6 +4,7 @@ from typing import List, Dict, Any
 from backend.core.config import settings
 from backend.generation.base import BaseGenerator
 from backend.generation.context import format_context
+from backend.voice.retry import execute_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -28,13 +29,14 @@ class SarvamGenerator(BaseGenerator):
     Adapter for Sarvam AI Chat Completions API.
     
     Leverages OpenAI-compatible requests and authenticates using the 
-    'api-subscription-key' header.
+    'api-subscription-key' header with resilient bounded retry logic.
     """
     
     def __init__(self):
         self.api_key = settings.SARVAM_API_KEY
         self.model = settings.SARVAM_MODEL
         self.base_url = "https://api.sarvam.ai/v1/chat/completions"
+        self.timeout = 45.0
         
         # Verify credential presence on init
         if not self.api_key or self.api_key == "your_sarvam_api_key_here":
@@ -62,20 +64,36 @@ class SarvamGenerator(BaseGenerator):
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt}
             ],
-            "temperature": 0.0
+            "temperature": 0.0,
+            "max_tokens": 512
         }
         
-        try:
-            response = requests.post(
+        def _do_request() -> requests.Response:
+            res = requests.post(
                 self.base_url,
                 json=payload,
                 headers=headers,
-                timeout=20.0
+                timeout=self.timeout
             )
-            response.raise_for_status()
+            res.raise_for_status()
+            return res
+        
+        try:
+            response = execute_with_retry(
+                _do_request,
+                max_retries=2,
+                initial_delay=1.0,
+                backoff_factor=2.0,
+                operation_name="Sarvam Chat Completion"
+            )
             res_data = response.json()
-            
-            answer = res_data["choices"][0]["message"]["content"].strip()
+            choices = res_data.get("choices", [])
+            if not choices:
+                answer = ABSTENTION
+            else:
+                msg = choices[0].get("message", {})
+                raw_content = msg.get("content") or msg.get("reasoning_content") or ""
+                answer = str(raw_content).strip() if raw_content else ABSTENTION
             
             # Build sources with preview — never expose scores or IDs inside the answer
             sources = []
@@ -102,4 +120,3 @@ class SarvamGenerator(BaseGenerator):
         except Exception as e:
             logger.error(f"Unexpected error during generation: {e}")
             raise RuntimeError(f"Unexpected generation failure: {e}")
-
