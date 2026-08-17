@@ -36,8 +36,6 @@ ENV/
 data/indexes/*
 !data/indexes/semantic/
 !data/indexes/semantic/**
-!data/indexes/full_dataset/
-!data/indexes/full_dataset/bm25/bm25_index.json.gz
 
 # ============================================================
 # Cache directories
