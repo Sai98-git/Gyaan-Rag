@@ -41,8 +41,9 @@ class MultiStrategyRetriever:
                     self.bm25_retrievers[strategy] = r
                     bm25_count += 1
 
-        # 2. Load Dense Vector Stores
-        if load_dense:
+        # 2. Load Dense Vector Stores (Local / Dedicated runtime only, skip on Vercel lambda cold start)
+        is_serverless = bool(os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME"))
+        if load_dense and not is_serverless:
             for strategy in STRATEGIES:
                 dense_dir = os.path.join(self.index_base_dir, strategy, "dense")
                 if os.path.isdir(dense_dir):
@@ -57,7 +58,7 @@ class MultiStrategyRetriever:
                 self.embedding_generator = get_embedding_generator()
                 logger.info("Dense embedding generator attached to MultiStrategyRetriever.")
             except Exception as e:
-                logger.warning(f"Dense embedding generator could not be loaded: {e}. Dense retrieval will be skipped if query vectors are not provided.")
+                logger.warning(f"Dense embedding generator could not be loaded: {e}. Running in pure BM25 multi-strategy mode.")
 
         self.loaded = (bm25_count > 0 or dense_count > 0)
         logger.info(
