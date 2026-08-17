@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
-from fastapi import FastAPI, HTTPException, status, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, status, UploadFile, File, Form, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 
@@ -33,6 +33,24 @@ app = FastAPI(
     description="End-to-end Voice-to-Text, Dense/BM25 retrieval, and Grounded Indic Generation API.",
     version="2.0.0"
 )
+
+@app.middleware("http")
+async def vercel_request_path_normalizer(request: Request, call_next):
+    """
+    Normalizes Vercel rewritten paths (x-matched-path / x-forwarded-uri)
+    so that FastAPI router matches /api/query, /api/voice, /health, /api/health directly.
+    """
+    matched_path = request.headers.get("x-matched-path") or request.headers.get("x-forwarded-uri")
+    if matched_path:
+        clean_path = matched_path.split("?")[0]
+        if clean_path and not clean_path.startswith("/api/index"):
+            request.scope["path"] = clean_path
+    elif request.scope.get("path", "").startswith("/api/index.py/"):
+        request.scope["path"] = request.scope["path"][len("/api/index.py"):]
+    elif request.scope.get("path", "").startswith("/api/index/"):
+        request.scope["path"] = request.scope["path"][len("/api/index"):]
+        
+    return await call_next(request)
 
 # Global index variables
 vector_store = NumpyVectorStore()
