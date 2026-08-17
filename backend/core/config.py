@@ -37,4 +37,10 @@ class Settings(BaseSettings):
     SARVAM_MODEL: str = "sarvam-105b"
     MIN_RETRIEVAL_SCORE: float = 0.78  # Grounding confidence threshold (below min observed positive 0.7987)
 
+    # Voice / Speech-to-Text Configuration Settings
+    STT_PROVIDER: str = "sarvam"  # "sarvam" or "elevenlabs"
+    SARVAM_STT_MODEL: str = "saaras:v3"
+    ELEVENLABS_API_KEY: Optional[str] = None
+    STT_TIMEOUT_SECONDS: float = 15.0
+
 settings = Settings()

@@ -1,5 +1,6 @@
 export function renderRagPipeline(container, activeLang) {
-    const titleText = activeLang === 'hi' ? 'आरएजी पाइपलाइन कैसे काम करती है' : 'HOW THE RAG PIPELINE WORKS';
+    const isHi = activeLang === 'hi';
+    const titleText = isHi ? 'वॉयस-इनेबल्ड RAG आर्किटेक्चर' : 'VOICE-ENABLED RAG ARCHITECTURE';
     
     container.innerHTML = `
         <div class="sketch-card-dark" style="box-shadow: 8px 8px 0px var(--electric-yellow); border-color: var(--hot-pink);">
@@ -8,28 +9,32 @@ export function renderRagPipeline(container, activeLang) {
             </h3>
             <div class="pipeline-flow">
                 <div class="flow-step font-display">
-                    1. USER QUERY
-                    <p>${activeLang === 'hi' ? 'उपयोगकर्ता सवाल पूछता है' : 'User asks a question in Hindi or English'}</p>
+                    1. 🎙 MICROPHONE INPUT
+                    <p>${isHi ? 'ब्राउज़र ऑडियो कैप्चर और लाइव स्ट्रीम' : 'Browser MediaRecorder live audio capture'}</p>
                 </div>
                 <div class="flow-step font-display">
-                    2. DENSE RETRIEVAL
-                    <p>${activeLang === 'hi' ? 'E5-small मॉडल सवाल को वेक्टर में बदलता है' : 'E5-small maps query to semantic vectors'}</p>
+                    2. 📝 SARVAM STT
+                    <p>${isHi ? 'सर्वम Saaras मॉडल द्वारा सटीक स्पीच-टू-टेक्स्ट' : 'Sarvam Saaras ASR converts speech to transcript'}</p>
                 </div>
                 <div class="flow-step font-display">
-                    3. CONTEXT EXTRACT
-                    <p>${activeLang === 'hi' ? 'संबंधित और सत्यापित पैराग्राफ निकाले जाते हैं' : 'Top relevant deduplicated chunks retrieved'}</p>
+                    3. 🧹 QUERY CLEANER
+                    <p>${isHi ? 'नॉइज़ फ़िल्टरिंग और टेक्स्ट नॉर्मलाइज़ेशन' : 'Audio artifact filtering and query normalization'}</p>
                 </div>
                 <div class="flow-step font-display">
-                    4. GROUNDING GUARD
-                    <p>${activeLang === 'hi' ? 'समानता स्कोर (>= 0.75) और तथ्यों की जांच होती है' : 'Validates similarity >= 0.75 and lexical overlap'}</p>
+                    4. 🎯 E5 VECTOR RETRIEVAL
+                    <p>${isHi ? 'MSMARCO-XI से शीर्ष-के पैराग्राफ्स का चयन' : 'Dense cosine search over indexed dataset passages'}</p>
+                </div>
+                <div class="flow-step font-display">
+                    5. 🧠 SARVAM GENERATION
+                    <p>${isHi ? 'सत्यापित संदर्भों पर आधारित उत्तर निर्माण' : 'Strict context-conditioned Indic LLM synthesis'}</p>
                 </div>
                 <div class="flow-step font-display" style="border-color: var(--electric-yellow); color: var(--electric-yellow);">
-                    5. GROUNDED ANSWER
-                    <p>${activeLang === 'hi' ? 'Sarvam मॉडल सत्यापित तथ्यों के साथ उत्तर देता है' : 'Sarvam generates answer referencing exact source citations'}</p>
+                    6. 🛡️ GROUNDING GUARD
+                    <p>${isHi ? 'स्कोर थ्रेशोल्ड (≥0.78) व लेक्सिकल ओवरलैप' : 'Score thresholding + hallucination guardrails'}</p>
                 </div>
             </div>
             <p class="font-sketch text-center" style="color: var(--electric-yellow); margin-top: 1rem; text-align: center;">
-                ⚡ ${activeLang === 'hi' ? 'कोई इंटरनेट का मनगढ़ंत सच नहीं' : 'No arbitrary internet magic.'}
+                ⚡ ${isHi ? 'शून्य मनगढ़ंत उत्तर · 100% साक्ष्य-आधारित' : 'Zero Hallucinations · Fully Evidence Grounded.'}
             </p>
         </div>
     `;

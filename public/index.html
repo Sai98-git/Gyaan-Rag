@@ -4,15 +4,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ज्ञान RAG — Indic Grounded AI Research Assistant</title>
+    <title>ज्ञान RAG — Voice-Enabled Indic Grounded AI Assistant</title>
     <meta name="description"
-        content="A brutalist, Indic-first grounded Retrieval-Augmented Generation system built for precise fact-backed Indian language answers.">
+        content="A brutalist, Indic-first Voice-Enabled Retrieval-Augmented Generation system built for speech-to-text grounded question answering.">
 
     <!-- Google Fonts typographic stack -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link
-        href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Space+Grotesk:wght@400;700&family=Yatra+One&family=Rozha+One&family=Caveat:wght@400;700&display=swap"
+        href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Space+Grotesk:wght@400;600;700&family=Yatra+One&family=Rozha+One&family=Caveat:wght@400;700&display=swap"
         rel="stylesheet">
 
     <!-- Custom Stylesheet -->
@@ -31,10 +31,13 @@
         <!-- Brutalist event-poster style Hero section -->
         <section id="hero-container"></section>
 
-        <!-- Search Input Section -->
+        <!-- Voice Input Section (Primary Interface) -->
+        <section id="voice-container" class="layout-section"></section>
+
+        <!-- Search Input Section (Text Fallback Accordion) -->
         <section id="query-container" class="layout-section"></section>
 
-        <!-- Response Panel (Answers + Sources + Guards) -->
+        <!-- Response Panel (Answers + Sources + Guards + Latency Breakdown) -->
         <section id="response-container" class="layout-section" style="display: none;"></section>
 
         <!-- System Architecture Terminals -->
@@ -54,7 +57,7 @@
     <!-- Sketchy Footer -->
     <footer class="main-footer">
         <div class="footer-stroke"></div>
-        <p>© 2026 ज्ञान/RAG Subsystem. Build by Hackers for Builders in Goa House.</p>
+        <p>© 2026 ज्ञान/Voice RAG Subsystem. Built for Indic-First Grounded AI QA.</p>
     </footer>
 
     <!-- Main Module Script -->

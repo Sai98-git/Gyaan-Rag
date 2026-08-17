@@ -1,5 +1,6 @@
 import { renderNavbar } from "./components/Navbar.js";
 import { renderHero } from "./components/Hero.js";
+import { renderVoiceInput } from "./components/VoiceInput.js";
 import { renderQueryInput, setQueryInputLoading } from "./components/QueryInput.js";
 import { renderAnswerCard } from "./components/AnswerCard.js";
 import { renderSourcesPanel } from "./components/SourcesPanel.js";
@@ -15,6 +16,7 @@ let currentQuery = "";
 // Element Container Selectors
 const navbarContainer = document.querySelector("#navbar-container");
 const heroContainer = document.querySelector("#hero-container");
+const voiceContainer = document.querySelector("#voice-container");
 const queryContainer = document.querySelector("#query-container");
 const responseContainer = document.querySelector("#response-container");
 const pipelineContainer = document.querySelector("#pipeline-container");
@@ -27,7 +29,8 @@ function init() {
     renderNavbar(navbarContainer, activeLang, handleLanguageChange);
     renderHero(heroContainer, activeLang);
     
-    // 2. Render Query Input Component
+    // 2. Render Voice Input (Primary CTA) and Text Query Fallback
+    renderVoiceInput(voiceContainer, activeLang, handleVoiceSubmit);
     renderQueryInput(queryContainer, activeLang, handleQuerySubmit);
     
     // 3. Render Technical Terminals
@@ -46,8 +49,9 @@ function handleLanguageChange(lang) {
     // Update navbar lang display active states
     renderNavbar(navbarContainer, activeLang, handleLanguageChange);
     
-    // Rerender Hero, QueryInput, and Pipeline panel language texts
+    // Rerender Hero, VoiceInput, QueryInput, and Pipeline panel
     renderHero(heroContainer, activeLang);
+    renderVoiceInput(voiceContainer, activeLang, handleVoiceSubmit);
     renderQueryInput(queryContainer, activeLang, handleQuerySubmit);
     
     // Keep input query string if any
@@ -63,11 +67,11 @@ function handleLanguageChange(lang) {
 
     // If a response is currently visible, rerender response texts
     if (responseContainer.style.display !== "none" && window.lastRAGResponse) {
-        renderRAGResponse(window.lastRAGResponse);
+        renderRAGResponse(window.lastRAGResponse, currentQuery);
     }
 }
 
-function renderRAGResponse(data) {
+function renderRAGResponse(data, queryText) {
     window.lastRAGResponse = data;
     responseContainer.style.display = "block";
     
@@ -80,18 +84,19 @@ function renderRAGResponse(data) {
     const answerMount = responseContainer.querySelector("#answer-card-mount");
     const sourcesMount = responseContainer.querySelector("#sources-panel-mount");
     
-    renderAnswerCard(answerMount, data, activeLang, currentQuery);
-    renderSourcesPanel(sourcesMount, data.sources, activeLang);
+    renderAnswerCard(answerMount, data, activeLang, queryText || data.transcript || currentQuery);
+    renderSourcesPanel(sourcesMount, data.sources || [], activeLang);
     
     // Smooth scroll response into viewport
     responseContainer.scrollIntoView({ behavior: "smooth" });
 }
 
-function renderLoading() {
+function renderLoading(textOverride) {
     responseContainer.style.display = "block";
-    const loadingText = activeLang === 'hi' 
-        ? 'तथ्यों को खोजा जा रहा है (Searching indices)...' 
-        : 'Retrieving context from indices...';
+    const defaultText = activeLang === 'hi' 
+        ? 'तथ्यों को खोजा जा रहा है (Retrieving & Generating)...' 
+        : 'Retrieving context and generating grounded answer...';
+    const loadingText = textOverride || defaultText;
         
     responseContainer.innerHTML = `
         <div class="sketch-card loading-box">
@@ -112,17 +117,63 @@ function renderError(errMessage) {
     responseContainer.innerHTML = `
         <div class="sketch-card abstain-card">
             <span class="answer-tag abstain-tag font-display">${errorTitle}</span>
-            <div class="answer-text" style="color: var(--hot-pink); font-weight: bold;">
+            <div class="answer-text" style="color: var(--hot-pink); font-weight: bold; margin-top: 10px;">
                 ${errMessage || fallbackText}
             </div>
             <p class="font-sketch" style="color: var(--dark-black); margin-top: 10px;">
-                ${activeLang === 'hi' ? '⚠️ कृपया जाँचें कि uvicorn बैकएंड सक्रिय है।' : '⚠️ Ensure uvicorn server is active.'}
+                ${activeLang === 'hi' ? '⚠️ कृपया जाँचें कि uvicorn बैकएंड और API कुंजियाँ सक्रिय हैं।' : '⚠️ Ensure backend server and API credentials are functional.'}
             </p>
         </div>
     `;
     responseContainer.scrollIntoView({ behavior: "smooth" });
 }
 
+// ─── Voice Submit Handler ───────────────────────────────────────────────────
+async function handleVoiceSubmit(audioBlob, filename, mimeType, onStageUpdate) {
+    renderLoading(activeLang === 'hi' ? '🎙️ आवाज़ का विश्लेषण किया जा रहा है...' : '🎙️ Processing voice recording...');
+    
+    const formData = new FormData();
+    formData.append("file", audioBlob, filename);
+    formData.append("language_code", activeLang === 'hi' ? "hi-IN" : "en-IN");
+
+    try {
+        if (onStageUpdate) onStageUpdate('stt');
+
+        const response = await fetch("/api/voice", {
+            method: "POST",
+            body: formData
+        });
+
+        if (!response.ok) {
+            let errorMsg = `HTTP Error ${response.status}`;
+            try {
+                const errData = await response.json();
+                if (errData && (errData.message || errData.detail)) {
+                    errorMsg = errData.message || errData.detail;
+                }
+            } catch (e) {}
+            throw new Error(errorMsg);
+        }
+
+        const data = await response.json();
+        
+        if (onStageUpdate) onStageUpdate('done');
+        currentQuery = data.transcript || "";
+        renderRAGResponse(data, data.transcript);
+
+    } catch (err) {
+        console.error("Voice RAG pipeline failure:", err);
+        let customMessage = err.message;
+        if (err instanceof TypeError && err.message === "Failed to fetch") {
+            customMessage = activeLang === 'hi'
+                ? "नेटवर्क त्रुटि: बैकएंड सर्वर से कनेक्शन नहीं हो सका।"
+                : "Network Error: Could not connect to the backend server.";
+        }
+        renderError(customMessage);
+    }
+}
+
+// ─── Text Query Submit Handler ──────────────────────────────────────────────
 async function handleQuerySubmit(query) {
     currentQuery = query;
     setQueryInputLoading(queryContainer, true, activeLang);
@@ -143,17 +194,15 @@ async function handleQuerySubmit(query) {
             let errorMsg = `HTTP Error ${response.status}`;
             try {
                 const errData = await response.json();
-                if (errData && errData.detail) {
-                    errorMsg += `: ${errData.detail}`;
+                if (errData && (errData.message || errData.detail)) {
+                    errorMsg = errData.message || errData.detail;
                 }
-            } catch (e) {
-                // Not JSON
-            }
+            } catch (e) {}
             throw new Error(errorMsg);
         }
         
         const data = await response.json();
-        renderRAGResponse(data);
+        renderRAGResponse(data, query);
         
     } catch (err) {
         setQueryInputLoading(queryContainer, false, activeLang);
@@ -162,8 +211,8 @@ async function handleQuerySubmit(query) {
         let customMessage = err.message;
         if (err instanceof TypeError && err.message === "Failed to fetch") {
             customMessage = activeLang === 'hi'
-                ? "नेटवर्क त्रुटि (Failed to fetch): बैकएंड सर्वर से कनेक्शन स्थापित नहीं हो सका।"
-                : "Network Error (Failed to fetch): Could not connect to the backend server.";
+                ? "नेटवर्क त्रुटि: बैकएंड सर्वर से कनेक्शन स्थापित नहीं हो सका।"
+                : "Network Error: Could not connect to the backend server.";
         }
         renderError(customMessage);
     }

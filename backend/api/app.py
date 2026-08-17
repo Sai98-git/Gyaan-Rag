@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, status, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 
@@ -22,15 +22,16 @@ from backend.retrieval.bm25 import BM25Retriever
 from backend.generation.mock import MockGenerator
 from backend.generation.sarvam import SarvamGenerator
 from backend.generation.guard import validate_generation
+from backend.voice import get_stt_provider, normalize_voice_query
 
 # Configure logging
 logger = logging.getLogger("rag_api")
 logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(
-    title="Indic RAG Subsystem API",
-    description="Backend API layer for dense/BM25 retrieval and grounded Indic LLM generation.",
-    version="1.0.0"
+    title="ज्ञान Gyaan RAG — Voice-Enabled Indic RAG Subsystem API",
+    description="End-to-end Voice-to-Text, Dense/BM25 retrieval, and Grounded Indic Generation API.",
+    version="2.0.0"
 )
 
 # Global index variables
@@ -128,6 +129,7 @@ def startup_event():
     init_rag_resources()
 
 
+# ─── Pydantic Schemas ────────────────────────────────────────────────────────
 class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1, description="The query string to search and answer.")
 
@@ -153,19 +155,105 @@ class QueryResponse(BaseModel):
     guard_reason: Optional[str] = None
 
 
+class VoiceLatencyBreakdown(BaseModel):
+    stt_ms: float
+    retrieval_ms: float
+    generation_ms: float
+    total_ms: float
+
+
+class VoiceResponse(BaseModel):
+    success: bool = True
+    transcript: str
+    normalized_query: str
+    language: str
+    answer: str
+    sources: List[SourceItem]
+    provider: str
+    stt_provider: str
+    guard_triggered: bool = False
+    guard_reason: Optional[str] = None
+    latency: VoiceLatencyBreakdown
+
+
+# ─── Core RAG Pipeline Helper ────────────────────────────────────────────────
+def _execute_rag_pipeline(query: str) -> Dict[str, Any]:
+    """
+    Core retrieval -> generation -> guard pipeline shared by text and voice.
+    
+    Returns:
+        Dict containing answer, sources, retrieval_latency_ms, generation_latency_ms,
+        provider, guard_triggered, guard_reason.
+    """
+    init_rag_resources()
+
+    # 1. Retrieval
+    t0 = time.perf_counter()
+    retrieved_chunks = []
+    retrieval_method = "dense"
+
+    if embedding_gen is not None:
+        query_emb = embedding_gen.embed_query(query)
+        retrieved_chunks = vector_store.search(query_emb, top_k=settings.RETRIEVAL_TOP_K)
+        retrieval_method = "dense"
+    elif len(bm25_retriever.chunks) > 0:
+        retrieved_chunks = bm25_retriever.search(query, top_k=settings.RETRIEVAL_TOP_K)
+        retrieval_method = "bm25"
+    else:
+        raise RuntimeError("No retrieval index is loaded on this server instance.")
+
+    retrieval_latency = (time.perf_counter() - t0) * 1000
+
+    # 2. Generation Provider Selection
+    provider_name = settings.GENERATION_PROVIDER.lower()
+    t0 = time.perf_counter()
+
+    if provider_name == "sarvam":
+        if not settings.SARVAM_API_KEY or settings.SARVAM_API_KEY == "your_sarvam_api_key_here":
+            raise ValueError("SARVAM_API_KEY is not configured for production generation.")
+        generator = SarvamGenerator()
+    else:
+        generator = MockGenerator()
+
+    candidate_response = generator.generate(query, retrieved_chunks)
+
+    # 3. Grounding Guard
+    try:
+        final_response = validate_generation(query, retrieved_chunks, candidate_response)
+        guard_triggered = final_response.get("guard_triggered", False)
+        guard_reason = final_response.get("guard_reason", None)
+    except Exception as e:
+        logger.error(f"Grounding guard error: {e}", exc_info=True)
+        final_response = candidate_response
+        guard_triggered = False
+        guard_reason = None
+
+    generation_latency = (time.perf_counter() - t0) * 1000
+
+    return {
+        "answer": final_response["answer"],
+        "sources": final_response.get("sources", []),
+        "retrieval_latency": retrieval_latency,
+        "generation_latency": generation_latency,
+        "retrieval_method": retrieval_method,
+        "provider": provider_name,
+        "guard_triggered": guard_triggered,
+        "guard_reason": guard_reason,
+        "chunks_count": len(retrieved_chunks)
+    }
+
+
+# ─── Endpoints ───────────────────────────────────────────────────────────────
+
 @app.post("/api/query", response_model=QueryResponse)
 @app.post("/query", response_model=QueryResponse)
 def handle_query(payload: QueryRequest):
     """
-    RAG endpoint executing the complete pipeline:
-    [1] Request received -> [2] Resource init -> [3] Retrieval -> [4] Results ->
-    [5] Context assembly -> [6] Provider -> [7] LLM request -> [8] LLM response ->
-    [9] Grounding guard -> [10] Response returned
+    Text-based query endpoint executing retrieval -> generation -> guard.
     """
-    # [1] Request received
     query = payload.query.strip()
     req_start_time = time.perf_counter()
-    logger.info(f"[1] Request received: query='{query}'")
+    logger.info(f"[Text Query] Received query='{query}'")
 
     if not query:
         raise HTTPException(
@@ -173,150 +261,182 @@ def handle_query(payload: QueryRequest):
             detail="Query string cannot be empty or whitespace."
         )
 
-    # [2] RAG resources initialized
-    init_rag_resources()
-    logger.info(
-        f"[2] RAG resources initialized: dense_chunks={len(vector_store.chunks_metadata)}, "
-        f"bm25_chunks={len(bm25_retriever.chunks)}"
-    )
-
-    # [3] Retrieval started
-    t0 = time.perf_counter()
-    retrieved_chunks = []
-    retrieval_method = "dense"
-    logger.info("[3] Retrieval started...")
-
     try:
-        if embedding_gen is not None:
-            query_emb = embedding_gen.embed_query(query)
-            retrieved_chunks = vector_store.search(query_emb, top_k=settings.RETRIEVAL_TOP_K)
-            retrieval_method = "dense"
-        elif len(bm25_retriever.chunks) > 0:
-            retrieved_chunks = bm25_retriever.search(query, top_k=settings.RETRIEVAL_TOP_K)
-            retrieval_method = "bm25"
-        else:
-            logger.error("[3.FAIL] Neither dense nor BM25 index files were loaded.")
-            return JSONResponse(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                content={
-                    "error": "RETRIEVAL_FAILED",
-                    "message": "The retrieval index could not be loaded on this server instance."
-                }
-            )
-    except Exception as e:
-        logger.error(f"[3.FAIL] Retrieval failure: {e}", exc_info=True)
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={
-                "error": "RETRIEVAL_FAILED",
-                "message": "The retrieval index could not be queried."
-            }
-        )
-    retrieval_latency = (time.perf_counter() - t0) * 1000
-
-    # [4] Retrieval completed
-    logger.info(
-        f"[4] Retrieval completed: method='{retrieval_method}', "
-        f"chunks_found={len(retrieved_chunks)}, latency={retrieval_latency:.2f}ms"
-    )
-
-    # [5] Context assembly completed
-    logger.info(f"[5] Context assembly completed for {len(retrieved_chunks)} chunks.")
-
-    # [6] Generation provider selected
-    provider_name = settings.GENERATION_PROVIDER.lower()
-    logger.info(f"[6] Generation provider selected: '{provider_name}'")
-
-    # [7] Generation request started
-    t0 = time.perf_counter()
-    logger.info(f"[7] Generation request started with provider='{provider_name}'...")
-
-    try:
-        if provider_name == "sarvam":
-            # Check key configuration
-            if not settings.SARVAM_API_KEY or settings.SARVAM_API_KEY == "your_sarvam_api_key_here":
-                logger.error("[7.FAIL] SARVAM_API_KEY is not configured.")
-                return JSONResponse(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    content={
-                        "error": "CONFIGURATION_ERROR",
-                        "message": "The production RAG configuration is incomplete (missing SARVAM_API_KEY)."
-                    }
-                )
-            generator = SarvamGenerator()
-        else:
-            generator = MockGenerator()
-
-        candidate_response = generator.generate(query, retrieved_chunks)
-        # [8] LLM response received
-        logger.info(f"[8] LLM response received from provider='{provider_name}'.")
-
+        result = _execute_rag_pipeline(query)
     except ValueError as e:
-        logger.error(f"[7.FAIL] Configuration error in generator: {e}")
+        logger.error(f"Configuration error in pipeline: {e}")
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={
-                "error": "CONFIGURATION_ERROR",
-                "message": "The production RAG configuration is incomplete."
-            }
+            content={"error": "CONFIGURATION_ERROR", "message": str(e)}
         )
     except (TimeoutError, RuntimeError) as e:
-        logger.error(f"[7.FAIL] LLM Provider failure: {e}")
+        logger.error(f"Pipeline failure: {e}")
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={
-                "error": "GENERATION_FAILED",
-                "message": "The language model service could not generate a response."
-            }
+            content={"error": "SERVICE_UNAVAILABLE", "message": str(e)}
         )
     except Exception as e:
-        logger.error(f"[7.FAIL] Unexpected generation failure: {e}", exc_info=True)
+        logger.error(f"Unexpected query failure: {e}", exc_info=True)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={
-                "error": "GENERATION_FAILED",
-                "message": "The language model service could not generate a response."
-            }
+            content={"error": "QUERY_FAILED", "message": "An error occurred while processing the query."}
         )
 
-    # [9] Grounding guard completed
-    try:
-        final_response = validate_generation(query, retrieved_chunks, candidate_response)
-        guard_triggered = final_response.get("guard_triggered", False)
-        guard_reason = final_response.get("guard_reason", None)
-        logger.info(f"[9] Grounding guard completed: triggered={guard_triggered}, reason='{guard_reason}'")
-    except Exception as e:
-        logger.error(f"[9.FAIL] Grounding guard error: {e}", exc_info=True)
-        final_response = candidate_response
-        guard_triggered = False
-        guard_reason = None
-
-    generation_latency = (time.perf_counter() - t0) * 1000
     total_latency = (time.perf_counter() - req_start_time) * 1000
-
-    # [10] Response returned
-    answer = final_response["answer"]
-    sources = final_response.get("sources", [])
-    max_ret_score = max((c.get("score", 0.0) for c in retrieved_chunks), default=0.0)
-
     logger.info(
-        f"[10] Response returned: method='{retrieval_method}', "
-        f"chunks={len(retrieved_chunks)}, max_score={max_ret_score:.4f}, "
-        f"guard={guard_triggered}, ret_lat={retrieval_latency:.2f}ms, "
-        f"gen_lat={generation_latency:.2f}ms, tot_lat={total_latency:.2f}ms"
+        f"[Text Query] Complete: method='{result['retrieval_method']}', "
+        f"chunks={result['chunks_count']}, guard={result['guard_triggered']}, "
+        f"ret_lat={result['retrieval_latency']:.2f}ms, gen_lat={result['generation_latency']:.2f}ms, "
+        f"tot_lat={total_latency:.2f}ms"
     )
 
     return QueryResponse(
-        answer=answer,
-        sources=sources,
-        retrieval=LatencyDetails(latency_ms=retrieval_latency),
-        generation=LatencyDetails(latency_ms=generation_latency),
-        provider=provider_name,
-        guard_triggered=guard_triggered,
-        guard_reason=guard_reason
+        answer=result["answer"],
+        sources=result["sources"],
+        retrieval=LatencyDetails(latency_ms=result["retrieval_latency"]),
+        generation=LatencyDetails(latency_ms=result["generation_latency"]),
+        provider=result["provider"],
+        guard_triggered=result["guard_triggered"],
+        guard_reason=result["guard_reason"]
     )
 
-# ─── Health endpoints ────────────────────────────────────────────────────────
+
+@app.post("/api/voice", response_model=VoiceResponse)
+@app.post("/voice", response_model=VoiceResponse)
+async def handle_voice(
+    file: UploadFile = File(..., description="Recorded audio clip from microphone"),
+    language_code: Optional[str] = Form(None, description="Optional language code (e.g., 'hi-IN')")
+):
+    """
+    End-to-end Voice RAG endpoint:
+    Microphone Audio -> Speech-To-Text (Sarvam/ElevenLabs) -> Query Normalization ->
+    Dense/BM25 Retrieval -> Grounded Generation -> Grounding Guard -> Structured Response.
+    """
+    total_start_time = time.perf_counter()
+    filename = file.filename or "recording.webm"
+    content_type = file.content_type or "audio/webm"
+
+    logger.info(f"[Voice Query] Audio received: filename='{filename}', content_type='{content_type}'")
+
+    # 1. Read and validate audio bytes
+    try:
+        audio_bytes = await file.read()
+    except Exception as e:
+        logger.error(f"[Voice Query] Failed to read uploaded audio: {e}")
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"error": "INVALID_AUDIO", "message": "Could not read audio stream from request."}
+        )
+
+    if not audio_bytes or len(audio_bytes) == 0:
+        logger.warning("[Voice Query] Empty audio stream (0 bytes).")
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"error": "EMPTY_AUDIO", "message": "Uploaded audio recording is empty (0 bytes)."}
+        )
+
+    # 2. Speech-to-Text Transcription
+    try:
+        stt_provider = get_stt_provider()
+        stt_result = stt_provider.transcribe(
+            audio_bytes=audio_bytes,
+            filename=filename,
+            mime_type=content_type,
+            language_code=language_code
+        )
+    except ValueError as e:
+        logger.error(f"[Voice Query] STT Configuration/Input error: {e}")
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"error": "CONFIGURATION_ERROR", "message": str(e)}
+        )
+    except TimeoutError as e:
+        logger.error(f"[Voice Query] STT Timeout: {e}")
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"error": "STT_TIMEOUT", "message": "Speech transcription timed out. Please try speaking again."}
+        )
+    except Exception as e:
+        logger.error(f"[Voice Query] STT Failure: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            content={"error": "STT_FAILED", "message": f"Speech transcription failed: {e}"}
+        )
+
+    raw_transcript = stt_result.transcript.strip()
+    if not raw_transcript:
+        logger.warning("[Voice Query] No speech recognized in audio.")
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "success": False,
+                "transcript": "",
+                "normalized_query": "",
+                "language": stt_result.language_code or "unknown",
+                "answer": "आवाज़ स्पष्ट रूप से सुनाई नहीं दी। कृपया पुनः बोलें। (No clear speech detected. Please speak again.)",
+                "sources": [],
+                "provider": settings.GENERATION_PROVIDER,
+                "stt_provider": stt_result.provider,
+                "guard_triggered": True,
+                "guard_reason": "No speech detected in audio clip",
+                "latency": {
+                    "stt_ms": stt_result.duration_ms,
+                    "retrieval_ms": 0.0,
+                    "generation_ms": 0.0,
+                    "total_ms": (time.perf_counter() - total_start_time) * 1000
+                }
+            }
+        )
+
+    # 3. Query Normalization
+    normalized_query = normalize_voice_query(raw_transcript)
+    logger.info(f"[Voice Query] Transcribed: '{raw_transcript}' -> Normalized: '{normalized_query}'")
+
+    # 4. Execute RAG Retrieval & Generation Pipeline
+    try:
+        rag_result = _execute_rag_pipeline(normalized_query)
+    except ValueError as e:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"error": "CONFIGURATION_ERROR", "message": str(e)}
+        )
+    except Exception as e:
+        logger.error(f"[Voice Query] RAG Subsystem Failure: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"error": "RAG_PIPELINE_FAILED", "message": "Failed to retrieve evidence or generate answer."}
+        )
+
+    total_pipeline_ms = (time.perf_counter() - total_start_time) * 1000
+
+    logger.info(
+        f"[Voice Query Complete] STT={stt_result.duration_ms:.1f}ms, "
+        f"Retrieval={rag_result['retrieval_latency']:.1f}ms, "
+        f"Gen={rag_result['generation_latency']:.1f}ms, "
+        f"Total={total_pipeline_ms:.1f}ms"
+    )
+
+    return VoiceResponse(
+        success=True,
+        transcript=raw_transcript,
+        normalized_query=normalized_query,
+        language=stt_result.language_code or "hi-IN",
+        answer=rag_result["answer"],
+        sources=rag_result["sources"],
+        provider=rag_result["provider"],
+        stt_provider=stt_result.provider,
+        guard_triggered=rag_result["guard_triggered"],
+        guard_reason=rag_result["guard_reason"],
+        latency=VoiceLatencyBreakdown(
+            stt_ms=stt_result.duration_ms,
+            retrieval_ms=rag_result["retrieval_latency"],
+            generation_ms=rag_result["generation_latency"],
+            total_ms=total_pipeline_ms
+        )
+    )
+
+
+# ─── Health & Diagnostics ────────────────────────────────────────────────────
 @app.get("/health", tags=["ops"])
 @app.get("/api/health", tags=["ops"])
 def health_check():
@@ -333,18 +453,22 @@ def health_check():
     return JSONResponse({
         "status": "ok",
         "service": "gyaan-rag",
+        "pipeline_type": "voice-enabled-rag",
         "retrieval": "ready" if is_ready else "degraded",
         "retrieval_backend": "dense" if embedding_gen is not None else "bm25",
         "bm25_loaded": len(bm25_retriever.chunks) > 0,
         "bm25_chunks": len(bm25_retriever.chunks),
         "dense_chunks": len(vector_store.chunks_metadata),
         "index_path_exists": dense_path is not None or bm25_path is not None,
+        "chunk_strategy": settings.CHUNK_STRATEGY,
         "generation_provider": settings.GENERATION_PROVIDER,
+        "stt_provider": settings.STT_PROVIDER,
+        "stt_model": settings.SARVAM_STT_MODEL,
         "sarvam_configured": has_sarvam_key
     })
 
 
-# ─── Frontend SPA (mounted for local dev; served statically on Vercel) ────────
+# ─── Frontend SPA Mount (for local development) ──────────────────────────────
 _frontend_dir = PROJECT_ROOT / "public" if (PROJECT_ROOT / "public").is_dir() else (PROJECT_ROOT / "frontend")
 if _frontend_dir.is_dir():
     app.mount("/", StaticFiles(directory=str(_frontend_dir), html=True), name="static")
