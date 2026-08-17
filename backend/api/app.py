@@ -522,6 +522,7 @@ def health_check():
 @app.api_route("/api/", methods=["GET", "POST", "HEAD", "OPTIONS"])
 @app.api_route("/api/index", methods=["GET", "POST", "HEAD", "OPTIONS"])
 @app.api_route("/api/index.py", methods=["GET", "POST", "HEAD", "OPTIONS"])
+@app.api_route("/api/index.py/{full_path:path}", methods=["GET", "POST", "HEAD", "OPTIONS"])
 async def vercel_universal_api_dispatcher(request: Request):
     """
     Universal dispatcher for Vercel serverless when requests are routed to /api.

@@ -2,31 +2,31 @@
   "rewrites": [
     {
       "source": "/health",
-      "destination": "/api"
+      "destination": "/api/index.py"
     },
     {
       "source": "/api/health",
-      "destination": "/api"
+      "destination": "/api/index.py"
     },
     {
       "source": "/api/query",
-      "destination": "/api"
+      "destination": "/api/index.py"
     },
     {
       "source": "/query",
-      "destination": "/api"
+      "destination": "/api/index.py"
     },
     {
       "source": "/api/voice",
-      "destination": "/api"
+      "destination": "/api/index.py"
     },
     {
       "source": "/voice",
-      "destination": "/api"
+      "destination": "/api/index.py"
     },
     {
       "source": "/api/:match*",
-      "destination": "/api"
+      "destination": "/api/index.py"
     }
   ],
   "functions": {
