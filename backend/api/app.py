@@ -500,9 +500,42 @@ def health_check():
     })
 
 
-# ─── Frontend SPA Mount (for local development) ──────────────────────────────
-_frontend_dir = PROJECT_ROOT / "public" if (PROJECT_ROOT / "public").is_dir() else (PROJECT_ROOT / "frontend")
-if _frontend_dir.is_dir():
-    app.mount("/", StaticFiles(directory=str(_frontend_dir), html=True), name="static")
-else:
-    logger.info(f"Frontend directory '{_frontend_dir}' not mounted locally (handled by static hosting/CDN).")
+# ─── Universal Vercel API Dispatcher ──────────────────────────────────────────
+@app.api_route("/api", methods=["GET", "POST", "HEAD", "OPTIONS"])
+@app.api_route("/api/", methods=["GET", "POST", "HEAD", "OPTIONS"])
+@app.api_route("/api/index", methods=["GET", "POST", "HEAD", "OPTIONS"])
+@app.api_route("/api/index.py", methods=["GET", "POST", "HEAD", "OPTIONS"])
+async def vercel_universal_api_dispatcher(request: Request):
+    """
+    Universal dispatcher for Vercel serverless when requests are routed to /api.
+    Inspects x-matched-path, content-type, or request method to invoke the exact handler.
+    """
+    target = (request.headers.get("x-matched-path") or request.headers.get("x-forwarded-uri") or request.url.path).lower()
+    
+    if request.method == "GET" or "health" in target:
+        return health_check()
+    elif request.method == "POST":
+        content_type = request.headers.get("content-type", "")
+        if "multipart" in content_type or "voice" in target:
+            form = await request.form()
+            file = form.get("file")
+            lang = form.get("language_code")
+            return await handle_voice(file=file, language_code=lang)
+        else:
+            try:
+                body = await request.json()
+                return handle_query(QueryRequest(**body))
+            except Exception as e:
+                logger.error(f"Failed to parse query payload in universal dispatcher: {e}")
+                return JSONResponse(status_code=400, content={"error": "INVALID_JSON", "message": str(e)})
+                
+    return health_check()
+
+
+# ─── Frontend SPA Mount (for local development only) ─────────────────────────
+import os
+if not os.getenv("VERCEL") and not os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
+    _frontend_dir = PROJECT_ROOT / "public" if (PROJECT_ROOT / "public").is_dir() else (PROJECT_ROOT / "frontend")
+    if _frontend_dir.is_dir():
+        app.mount("/static", StaticFiles(directory=str(_frontend_dir), html=True), name="static")
+
