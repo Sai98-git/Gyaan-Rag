@@ -1,12 +1,59 @@
 import time
 import logging
 import requests
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 from backend.core.config import settings
 from backend.voice.base import BaseSTTProvider, STTResult
 from backend.voice.retry import execute_with_retry
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_audio_mime(mime_type: str, filename: str, audio_bytes: bytes) -> Tuple[str, str]:
+    """
+    Normalizes audio MIME type and filename to match Sarvam API strict whitelist:
+    1. Inspects magic bytes (RIFF -> audio/wav, OggS -> audio/ogg, EBML -> audio/webm).
+    2. Strips parameters (e.g. 'audio/webm;codecs=opus' -> 'audio/webm').
+    3. Normalizes common aliases (audio/x-wav -> audio/wav, audio/mpeg -> audio/mp3).
+    4. Ensures filename extension matches clean MIME.
+    """
+    # 1. Inspect magic bytes if available
+    if len(audio_bytes) >= 4:
+        if audio_bytes[:4] == b"RIFF":
+            return "audio/wav", "recording.wav"
+        elif audio_bytes[:4] == b"OggS":
+            return "audio/ogg", "recording.ogg"
+        elif audio_bytes[:4] == b"\x1a\x45\xdf\xa3":
+            return "audio/webm", "recording.webm"
+        elif audio_bytes[:3] == b"ID3" or (audio_bytes[:2] == b"\xff\xfb"):
+            return "audio/mp3", "recording.mp3"
+
+    # 2. Strip parameters from MIME type
+    clean_mime = mime_type.split(";")[0].strip().lower() if mime_type else "audio/wav"
+    
+    # 3. Canonical whitelist mapping for Sarvam API
+    mime_map = {
+        "audio/webm": ("audio/webm", "recording.webm"),
+        "video/webm": ("video/webm", "recording.webm"),
+        "audio/wav": ("audio/wav", "recording.wav"),
+        "audio/x-wav": ("audio/wav", "recording.wav"),
+        "audio/wave": ("audio/wav", "recording.wav"),
+        "audio/ogg": ("audio/ogg", "recording.ogg"),
+        "audio/opus": ("audio/opus", "recording.opus"),
+        "audio/mp3": ("audio/mp3", "recording.mp3"),
+        "audio/mpeg": ("audio/mpeg", "recording.mp3"),
+        "audio/mp4": ("audio/mp4", "recording.mp4"),
+        "audio/m4a": ("audio/x-m4a", "recording.m4a"),
+        "audio/x-m4a": ("audio/x-m4a", "recording.m4a"),
+        "audio/flac": ("audio/flac", "recording.flac"),
+        "audio/aac": ("audio/aac", "recording.aac"),
+    }
+    
+    if clean_mime in mime_map:
+        return mime_map[clean_mime]
+        
+    return "audio/wav", "recording.wav"
+
 
 class SarvamSTTProvider(BaseSTTProvider):
     """
@@ -38,13 +85,16 @@ class SarvamSTTProvider(BaseSTTProvider):
         if not self.api_key or self.api_key == "your_sarvam_api_key_here":
             raise ValueError("Sarvam API key is missing. Set SARVAM_API_KEY in your environment.")
 
+        # Normalize MIME type and filename for Sarvam strict whitelist compliance
+        normalized_mime, normalized_filename = normalize_audio_mime(mime_type, filename, audio_bytes)
+
         headers = {
             "api-subscription-key": self.api_key
         }
 
-        # Format multipart data
+        # Format multipart data with sanitized MIME type
         files = {
-            "file": (filename, audio_bytes, mime_type)
+            "file": (normalized_filename, audio_bytes, normalized_mime)
         }
         
         data: Dict[str, str] = {
@@ -55,8 +105,8 @@ class SarvamSTTProvider(BaseSTTProvider):
             data["language_code"] = language_code
 
         logger.info(
-            f"Sending {len(audio_bytes)} bytes audio ({filename}, {mime_type}) "
-            f"to Sarvam STT model '{self.model}'..."
+            f"Sending {len(audio_bytes)} bytes audio (orig='{filename}', mime='{mime_type}' -> "
+            f"norm_file='{normalized_filename}', norm_mime='{normalized_mime}') to Sarvam STT '{self.model}'..."
         )
 
         def _do_request() -> requests.Response:
@@ -67,7 +117,6 @@ class SarvamSTTProvider(BaseSTTProvider):
                 data=data,
                 timeout=self.timeout
             )
-            # Raise for status so retry handler catches 429, 500, 502, 503
             res.raise_for_status()
             return res
 

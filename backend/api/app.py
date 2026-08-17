@@ -361,10 +361,16 @@ async def handle_voice(
             content={"error": "STT_TIMEOUT", "message": "Speech transcription timed out. Please try speaking again."}
         )
     except Exception as e:
+        err_msg = str(e)
         logger.error(f"[Voice Query] STT Failure: {e}", exc_info=True)
+        if "HTTP 400" in err_msg or "400" in err_msg:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"error": "STT_BAD_REQUEST", "message": f"Speech transcription rejected by STT provider: {err_msg}"}
+            )
         return JSONResponse(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            content={"error": "STT_FAILED", "message": f"Speech transcription failed: {e}"}
+            content={"error": "STT_FAILED", "message": f"Speech transcription failed: {err_msg}"}
         )
 
     raw_transcript = stt_result.transcript.strip()
