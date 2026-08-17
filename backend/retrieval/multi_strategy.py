@@ -7,7 +7,7 @@ from backend.retrieval.normalizer import normalize_query_text
 
 logger = logging.getLogger(__name__)
 
-STRATEGIES = ["semantic", "sliding_window", "passage"]
+STRATEGIES = ["full_dataset", "semantic", "sliding_window", "passage"]
 
 
 class MultiStrategyRetriever:
@@ -132,7 +132,7 @@ class MultiStrategyRetriever:
                 logger.error(f"[MultiStrategy] Dense search error: {e}")
 
         # ── 2. Multi-Strategy BM25 Retrieval ──
-        strategy_weights = {"semantic": 1.2, "sliding_window": 1.0, "passage": 1.0}
+        strategy_weights = {"full_dataset": 1.5, "semantic": 1.2, "sliding_window": 1.0, "passage": 1.0}
         for strategy, retriever in self.bm25_retrievers.items():
             bm25_hits = retriever.search(norm_query, top_k=top_k * 2)
             strat_w = strategy_weights.get(strategy, 1.0) * bm25_weight
