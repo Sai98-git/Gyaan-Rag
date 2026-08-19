@@ -25,12 +25,12 @@ def get_localized_abstention(query: str) -> str:
 def check_pre_retrieval_guard(
     query: str, 
     context: List[Dict[str, Any]], 
-    min_dense_threshold: float = 0.72
+    min_score_threshold: float = 0.001
 ) -> Optional[Dict[str, Any]]:
     """
     Tier 1 Pre-Generation Evidence Guard:
     Checks if any evidence passages were retrieved for the query with sufficient
-    mathematical confidence (dense similarity or BM25 match).
+    mathematical confidence (BM25 score or dense similarity).
     
     Zero hardcoded knowledge, zero topic lists.
     """
@@ -47,17 +47,17 @@ def check_pre_retrieval_guard(
 
     top_chunk = context[0]
     top_score = top_chunk.get("score", 0.0)
-    top_dense = top_chunk.get("dense_score", 0.0)
     top_bm25 = top_chunk.get("bm25_score", 0.0)
+    top_dense = top_chunk.get("dense_score", 0.0)
 
-    # If neither dense similarity is sufficient nor any BM25 term matched
-    if top_dense < min_dense_threshold and top_bm25 <= 0.0:
-        logger.info(f"[Pre-Gen Guard] Low confidence (dense={top_dense:.4f}, bm25={top_bm25:.4f}) for query '{query}' -> Abstaining.")
+    # Check if retrieval returned genuine matches
+    if top_score < min_score_threshold and top_bm25 <= 0.0 and top_dense <= 0.0:
+        logger.info(f"[Pre-Gen Guard] Zero confidence (score={top_score}, bm25={top_bm25}, dense={top_dense}) for query '{query}' -> Abstaining.")
         return {
             "answer": safe_fallback,
             "sources": context,
             "guard_triggered": True,
-            "guard_reason": f"Insufficient retrieval confidence (dense={top_dense:.3f}, bm25={top_bm25:.3f})"
+            "guard_reason": f"Insufficient retrieval confidence (score={top_score:.3f}, bm25={top_bm25:.3f})"
         }
 
     return None
@@ -79,15 +79,28 @@ def validate_generation(query: str, context: List[Dict[str, Any]], answer_dict: 
             "guard_reason": "Empty context"
         }
         
-    answer_text = answer_dict.get("answer", "").strip()
+    answer_text = answer_dict.get("answer", "").strip().lower()
     
-    # Check for standard model refusal indicators
-    refusal_keywords = {
-        "sorry", "insufficient", "पर्याप्त", "जानकारी", "सॉरी", "reliably", 
-        "not have enough information", "डोंट हैव इनफ", "उपलब्ध स्रोतों", "विश्वसनीय उत्तर",
-        "i don't have enough", "does not contain"
-    }
-    is_refusal = any(kw in answer_text.lower() for kw in refusal_keywords)
+    # Specific multi-word refusal patterns (avoids false-positive rejection of single common words)
+    refusal_patterns = [
+        r"पर्याप्त जानकारी नहीं",
+        r"उत्तर देने के लिए पर्याप्त",
+        r"स्रोतों में.*पर्याप्त",
+        r"उपलब्ध स्रोतों में.*नहीं",
+        r"संदर्भ में.*नहीं है",
+        r"जानकारी उपलब्ध नहीं",
+        r"जानकारी नहीं मिली",
+        r"don'?t have enough information",
+        r"do not have enough information",
+        r"not enough information",
+        r"insufficient information",
+        r"cannot answer based on",
+        r"does not contain.*information",
+        r"no information.*in the (?:provided|retrieved) (?:context|sources)",
+        r"context does not (?:contain|mention|provide)"
+    ]
+    
+    is_refusal = any(re.search(pat, answer_text) for pat in refusal_patterns)
     
     if is_refusal:
         return {

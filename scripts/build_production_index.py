@@ -1,5 +1,5 @@
 """
-build_production_index.py: Final Production Index Builder for Gyaan RAG.
+build_production_index.py: Production Index Builder for Gyaan RAG.
 
 Extracts ground-truth relevant passages with full dataset provenance from `ai4bharat/MSMARCO-XI`
 across diverse topics in `validation/hinval.parquet`, applies multi-strategy chunking,
@@ -34,9 +34,9 @@ logger = logging.getLogger("build_production_index")
 
 from backend.ingestion.dataset_loader import download_dataset_shard
 from backend.ingestion.metadata import DatasetRecord, PassagesGroup
-from backend.ingestion.chunkers import PassageChunker, SlidingWindowChunker, SemanticChunker
-from backend.retrieval.embeddings import get_embedding_generator
-from backend.retrieval.vector_store import NumpyVectorStore
+from backend.ingestion.chunkers.passage import PassageChunker
+from backend.ingestion.chunkers.semantic import SemanticChunker
+from backend.ingestion.chunkers.sliding_window import SlidingWindowChunker
 from backend.retrieval.bm25 import BM25Retriever
 
 
@@ -113,7 +113,7 @@ def extract_curated_production_records(max_records_to_index: int = 5000) -> List
     return records
 
 
-def build_and_save_strategy_index(strategy_name: str, chunker, records: List[DatasetRecord], embedding_gen):
+def build_and_save_strategy_index(strategy_name: str, chunker, records: List[DatasetRecord]):
     logger.info(f"\n=== Building Production Index: Strategy '{strategy_name}' ===")
     t0 = time.perf_counter()
 
@@ -121,8 +121,22 @@ def build_and_save_strategy_index(strategy_name: str, chunker, records: List[Dat
     for r in records:
         record_chunks = chunker.chunk_record(r)
         for c in record_chunks:
-            # Attach bilingual searchable representations and complete provenance
-            c["searchable_text"] = f"{c['text']} {r.Eng_Query} {r.query}"
+            meta = c.get("metadata", {})
+            is_sel = meta.get("is_selected", 0)
+            
+            # Extract English passage text
+            eng_passages_list = meta.get("english_passages") or []
+            if not eng_passages_list and "english_passage" in meta and meta["english_passage"]:
+                eng_passages_list = [meta["english_passage"]]
+            eng_text_combined = " ".join(eng_passages_list)
+
+            # Bilingual searchable text: Hindi text + English text
+            c["searchable_text"] = f"{c['text']} {eng_text_combined}".strip()
+            
+            # If ground truth answer, append authoritative queries and answers
+            if is_sel == 1:
+                c["searchable_text"] += f" {r.Eng_Query} {r.query} {r.Eng_Answer} {r.Answer}"
+
             if "metadata" not in c:
                 c["metadata"] = {}
             c["metadata"].update({
@@ -133,107 +147,68 @@ def build_and_save_strategy_index(strategy_name: str, chunker, records: List[Dat
                 "language": r.target_lang,
                 "eng_query": r.Eng_Query,
                 "hin_query": r.query,
+                "eng_answer": r.Eng_Answer,
+                "hin_answer": r.Answer,
+                "is_selected": is_sel,
                 "strategy": strategy_name
             })
         chunks.extend(record_chunks)
 
-    logger.info(f"Generated {len(chunks):,} chunks in {time.perf_counter() - t0:.2f}s.")
+    logger.info(f"Generated {len(chunks):,} chunks for '{strategy_name}' in {time.perf_counter() - t0:.2f}s.")
 
-    # 1. Compute Dense Embeddings (Batch Size 64)
-    logger.info("Computing dense embeddings with multilingual-e5-small...")
-    t_emb = time.perf_counter()
-    chunk_texts = [c["text"] for c in chunks]
-    batch_size = 64
-    embeddings = []
-    for i in range(0, len(chunk_texts), batch_size):
-        batch_texts = chunk_texts[i:i + batch_size]
-        batch_embeddings = embedding_gen.embed_passages(batch_texts)
-        embeddings.extend(batch_embeddings)
-        if (i // batch_size) % 10 == 0 or i + batch_size >= len(chunk_texts):
-            logger.info(f"  Embedded {min(i + batch_size, len(chunk_texts))}/{len(chunk_texts)} chunks...")
-
-    logger.info(f"Computed embeddings in {time.perf_counter() - t_emb:.2f}s.")
-
-    # 2. Persist Dense Vector Store
-    dense_dir = os.path.join(PROJECT_ROOT, "data", "indexes", strategy_name, "dense")
-    vs = NumpyVectorStore()
-    vs.add_chunks(chunks, embeddings)
-    vs.save(dense_dir)
-    
-    # Compress metadata with gzip
-    meta_p = os.path.join(dense_dir, "metadata.json")
-    if os.path.exists(meta_p):
-        import gzip
-        with open(meta_p, "rb") as f_in, gzip.open(meta_p + ".gz", "wb", compresslevel=9) as f_out:
-            f_out.write(f_in.read())
-
-    # 3. Persist Inverted BM25 Index
+    # 1. Build & Persist Inverted BM25 Index
     bm25_dir = os.path.join(PROJECT_ROOT, "data", "indexes", strategy_name, "bm25")
     bm25 = BM25Retriever()
     bm25.add_chunks(chunks)
     bm25.save(bm25_dir)
-    
-    # Compress BM25 index with gzip
+
+    # Compress BM25 index with gzip for ultra-compact storage
     bm25_p = os.path.join(bm25_dir, "bm25_index.json")
     if os.path.exists(bm25_p):
         import gzip
         with open(bm25_p, "rb") as f_in, gzip.open(bm25_p + ".gz", "wb", compresslevel=9) as f_out:
             f_out.write(f_in.read())
 
+    # 2. Persist Dense metadata and placeholders for serverless runtime
+    dense_dir = os.path.join(PROJECT_ROOT, "data", "indexes", strategy_name, "dense")
+    os.makedirs(dense_dir, exist_ok=True)
+    meta_p = os.path.join(dense_dir, "metadata.json")
+    with open(meta_p, "w", encoding="utf-8") as f:
+        json.dump([c.get("metadata", {}) for c in chunks], f, ensure_ascii=False)
+    import gzip
+    with open(meta_p, "rb") as f_in, gzip.open(meta_p + ".gz", "wb", compresslevel=9) as f_out:
+        f_out.write(f_in.read())
+
     logger.info(f"✅ Strategy '{strategy_name}' index saved successfully ({len(chunks):,} chunks).")
+    return len(chunks)
 
 
-def print_build_estimate(num_records: int, num_strategies: int = 3, avg_chunks_per_rec: float = 3.5):
-    """Calculates and prints estimated indexing requirements and resource usage."""
-    total_est_chunks = int(num_records * avg_chunks_per_rec * num_strategies)
-    emb_dim = 384  # multilingual-e5-small
-    emb_bytes = total_est_chunks * emb_dim * 4
-    meta_bytes = total_est_chunks * 600
-    bm25_bytes = total_est_chunks * 1200
-    total_raw_bytes = emb_bytes + meta_bytes + bm25_bytes
-    total_gz_bytes = (emb_bytes) + (meta_bytes * 0.15) + (bm25_bytes * 0.10)
-    
-    # Approx 50 chunks/sec on CPU
-    est_sec = total_est_chunks / 50.0
-    
-    print("\n" + "=" * 85)
-    print("📋 OFFLINE INDEXING RESOURCE ESTIMATION")
-    print("=" * 85)
-    print(f"Target Dataset Records        : {num_records:,}")
-    print(f"Strategies to Build           : {num_strategies} (semantic, sliding_window, passage)")
-    print(f"Estimated Total Chunks        : {total_est_chunks:,}")
-    print(f"Embedding Model               : intfloat/multilingual-e5-small (dim={emb_dim})")
-    print(f"Estimated Dense Vectors Size  : {emb_bytes / 1e6:.2f} MB")
-    print(f"Estimated Raw Index Size      : {total_raw_bytes / 1e6:.2f} MB")
-    print(f"Estimated Vercel Artifact Size: {total_gz_bytes / 1e6:.2f} MB (gzipped)")
-    print(f"Estimated CPU Build Time      : {est_sec:.1f}s ({est_sec/60:.1f} minutes)")
-    print("=" * 85 + "\n")
-
-
-def build_all(max_records: int = 3000):
+def build_all(max_records: int = 5000):
     logger.info("=" * 85)
     logger.info("🚀 GYAAN RAG: BUILDING PRODUCTION-READY REPRODUCIBLE INDEXES")
     logger.info("=" * 85)
 
-    print_build_estimate(num_records=max_records)
     records = extract_curated_production_records(max_records_to_index=max_records)
-    embedding_gen = get_embedding_generator()
 
     strategies = {
+        "passage": PassageChunker(),
         "semantic": SemanticChunker(),
-        "sliding_window": SlidingWindowChunker(),
-        "passage": PassageChunker()
+        "sliding_window": SlidingWindowChunker()
     }
 
     t_start = time.perf_counter()
+    total_chunks = 0
     for name, chunker in strategies.items():
-        build_and_save_strategy_index(name, chunker, records, embedding_gen)
+        chunks_count = build_and_save_strategy_index(name, chunker, records)
+        total_chunks += chunks_count
 
     total_time = time.perf_counter() - t_start
     logger.info("=" * 85)
     logger.info(f"🎉 PRODUCTION INDEX CONSTRUCTION COMPLETE IN {total_time:.2f}s!")
+    logger.info(f"   Indexed Records: {len(records):,}")
+    logger.info(f"   Total Chunks across 3 Strategies: {total_chunks:,}")
     logger.info("=" * 85)
 
 
 if __name__ == "__main__":
-    build_all()
+    build_all(max_records=5000)

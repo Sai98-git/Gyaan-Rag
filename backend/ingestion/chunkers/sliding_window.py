@@ -67,9 +67,14 @@ class SlidingWindowChunker(BaseChunker):
             
             # Enforce MIN_CHUNK_SIZE constraints unless it's the only text block
             if len(chunk_text) >= settings.MIN_CHUNK_SIZE or (start_idx == 0 and end_idx == n_sentences):
-                # Calculate aggregated is_selected and passage positions
+                # Calculate aggregated is_selected, passage positions, and English passages
                 chunk_is_selected = max(sentence_metadata[k]["is_selected"] for k in range(start_idx, end_idx))
                 passage_positions = list(set(sentence_metadata[k]["passage_idx"] for k in range(start_idx, end_idx)))
+                chunk_english_passages = [
+                    record.passages.English_passages[p_idx] 
+                    for p_idx in passage_positions 
+                    if p_idx < len(record.passages.English_passages) and record.passages.English_passages[p_idx]
+                ]
                 
                 # Construct metadata
                 metadata = {
@@ -82,7 +87,8 @@ class SlidingWindowChunker(BaseChunker):
                     "start_sentence_idx": start_idx,
                     "end_sentence_idx": end_idx - 1,
                     "is_selected": chunk_is_selected,
-                    "original_passage_positions": passage_positions
+                    "original_passage_positions": passage_positions,
+                    "english_passages": chunk_english_passages
                 }
                 
                 chunk_id = f"{record.query_id}_sliding_{position}"

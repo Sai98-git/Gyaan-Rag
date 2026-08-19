@@ -107,12 +107,15 @@ class NumpyVectorStore:
         results = []
         for idx in top_indices:
             chunk = self.chunks_metadata[idx]
+            cid = chunk.get("chunk_id", f"chunk_{idx}")
+            txt = chunk.get("text", chunk.get("searchable_text", ""))
+            meta = chunk.get("metadata", chunk)
             results.append({
-                "chunk_id": chunk["chunk_id"],
-                "text": chunk["text"],
+                "chunk_id": cid,
+                "text": txt,
                 "score": float(similarities[idx]),
                 "retrieval_method": "dense",
-                "metadata": chunk["metadata"]
+                "metadata": meta
             })
             
         return results

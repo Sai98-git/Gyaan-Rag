@@ -88,7 +88,7 @@ def download_dataset_shard() -> str:
     logger.info(f"Dataset shard successfully downloaded/located at: {local_path}")
     return local_path
 
-def iterate_records() -> Generator[DatasetRecord, None, None]:
+def iterate_records(max_records: Optional[int] = None) -> Generator[DatasetRecord, None, None]:
     """
     Downloads the required Parquet file, streams it in record batches,
     normalizes, and yields validated DatasetRecord objects.
@@ -104,7 +104,7 @@ def iterate_records() -> Generator[DatasetRecord, None, None]:
     logger.info("Initializing Parquet batch reader...")
     pf = pq.ParquetFile(local_path)
     
-    max_records = settings.MAX_RECORDS if settings.CORPUS_MODE == "sample" else None
+    limit = max_records if max_records is not None else (settings.MAX_RECORDS if settings.CORPUS_MODE == "sample" else None)
     count = 0
     
     # Read row-group in batches of 2000 rows to optimize memory and CPU
@@ -116,8 +116,8 @@ def iterate_records() -> Generator[DatasetRecord, None, None]:
             if record:
                 yield record
                 count += 1
-                if max_records and count >= max_records:
-                    logger.info(f"Reached MAX_RECORDS limit of {max_records}. Stopping iteration.")
+                if limit and count >= limit:
+                    logger.info(f"Reached limit of {limit}. Stopping iteration.")
                     return
                     
     logger.info(f"Finished loading dataset shard. Total records yielded: {count}")

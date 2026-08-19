@@ -99,7 +99,7 @@ class BM25Retriever:
         }
         
         with open(index_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            json.dump(data, f, ensure_ascii=False)
             
         logger.info(f"BM25 inverted index saved to: {directory}")
 
@@ -111,12 +111,12 @@ class BM25Retriever:
         target_path = None
         is_gzip = False
 
-        if os.path.exists(gz_path):
-            target_path = gz_path
-            is_gzip = True
-        elif os.path.exists(json_path):
+        if os.path.exists(json_path):
             target_path = json_path
             is_gzip = False
+        elif os.path.exists(gz_path):
+            target_path = gz_path
+            is_gzip = True
         else:
             logger.warning(f"BM25 index not found at: {directory}")
             return False
@@ -137,10 +137,7 @@ class BM25Retriever:
             self.chunks = data["chunks"]
 
             if "inverted_index" in data:
-                self.inverted_index = {
-                    k: [tuple(item) for item in v]
-                    for k, v in data["inverted_index"].items()
-                }
+                self.inverted_index = data["inverted_index"]
             elif "doc_term_frequencies" in data:
                 self.inverted_index = {}
                 for idx, tf in enumerate(data["doc_term_frequencies"]):

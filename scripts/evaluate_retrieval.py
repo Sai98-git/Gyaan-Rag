@@ -47,10 +47,9 @@ def evaluate_dataset_retrieval(sample_limit: int = 100):
 
     indexes_base = os.path.join(PROJECT_ROOT, "data", "indexes")
     retriever = MultiStrategyRetriever(indexes_base)
-    retriever.load(load_dense=True)
+    retriever.load(load_dense=False)
 
-    records = list(iterate_records())
-    test_records = records[:sample_limit]
+    test_records = list(iterate_records(max_records=sample_limit))
 
     recall_at_1 = 0
     recall_at_5 = 0
