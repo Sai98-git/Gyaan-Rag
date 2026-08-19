@@ -173,48 +173,98 @@ async function handleVoiceSubmit(audioBlob, filename, mimeType, onStageUpdate) {
     }
 }
 
-// ─── Text Query Submit Handler ──────────────────────────────────────────────
+// ─── Text Query Submit Handler with Real-Time SSE Streaming ────────────────
 async function handleQuerySubmit(query) {
     currentQuery = query;
     setQueryInputLoading(queryContainer, true, activeLang);
-    renderLoading();
     
+    // Mount initial progressive streaming card
+    responseContainer.style.display = "block";
+    const initialStreamLabel = activeLang === 'hi' ? '⚡ साक्ष्य स्ट्रीमिंग (Streaming)...' : '⚡ STREAMING EVIDENCE...';
+    responseContainer.innerHTML = `
+        <div id="answer-card-mount" class="layout-section">
+            <div class="sketch-card">
+                <div class="card-header-bar" style="margin-bottom: 12px;">
+                    <span class="answer-tag font-display" style="background: var(--electric-yellow); color: var(--dark-black);">${initialStreamLabel}</span>
+                </div>
+                <div id="streaming-answer-text" class="answer-text font-serif" style="font-size: 1.15rem; line-height: 1.6; min-height: 48px; color: var(--dark-black);">
+                    <span class="streaming-cursor">▊</span>
+                </div>
+            </div>
+        </div>
+        <div id="sources-panel-mount" class="layout-section"></div>
+    `;
+    responseContainer.scrollIntoView({ behavior: "smooth" });
+
     try {
-        const response = await fetch("/api/query", {
+        const response = await fetch("/api/stream", {
             method: "POST",
             headers: {
                 "Content-Type": "application/json"
             },
             body: JSON.stringify({ query: query })
         });
-        
-        setQueryInputLoading(queryContainer, false, activeLang);
-        
-        if (!response.ok) {
-            let errorMsg = `HTTP Error ${response.status}`;
-            try {
-                const errData = await response.json();
-                if (errData && (errData.message || errData.detail)) {
-                    errorMsg = errData.message || errData.detail;
-                }
-            } catch (e) {}
-            throw new Error(errorMsg);
+
+        if (!response.ok || !response.body) {
+            // Fallback to synchronous endpoint
+            const syncRes = await fetch("/api/query", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ query: query })
+            });
+            const data = await syncRes.json();
+            setQueryInputLoading(queryContainer, false, activeLang);
+            renderRAGResponse(data, query);
+            return;
         }
-        
-        const data = await response.json();
-        renderRAGResponse(data, query);
-        
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let accumulatedText = "";
+        let buffer = "";
+        const streamingTextEl = document.querySelector("#streaming-answer-text");
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n\n");
+            buffer = lines.pop(); // Keep trailing incomplete fragment
+
+            for (const line of lines) {
+                if (line.startsWith("data: ")) {
+                    try {
+                        const payload = JSON.parse(line.slice(6));
+                        if (payload.type === "token") {
+                            accumulatedText += payload.delta;
+                            if (streamingTextEl) {
+                                streamingTextEl.innerHTML = `${accumulatedText}<span class="streaming-cursor" style="color: var(--hot-pink);">▊</span>`;
+                            }
+                        } else if (payload.type === "done") {
+                            setQueryInputLoading(queryContainer, false, activeLang);
+                            renderRAGResponse(payload, query);
+                            return;
+                        }
+                    } catch (e) {}
+                }
+            }
+        }
+        setQueryInputLoading(queryContainer, false, activeLang);
     } catch (err) {
         setQueryInputLoading(queryContainer, false, activeLang);
-        console.error("RAG Query submit failure details:", err);
-        
-        let customMessage = err.message;
-        if (err instanceof TypeError && err.message === "Failed to fetch") {
-            customMessage = activeLang === 'hi'
-                ? "नेटवर्क त्रुटि: बैकएंड सर्वर से कनेक्शन स्थापित नहीं हो सका।"
-                : "Network Error: Could not connect to the backend server.";
+        console.error("Streaming failure:", err);
+        // Fallback to synchronous query
+        try {
+            const syncRes = await fetch("/api/query", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ query: query })
+            });
+            const data = await syncRes.json();
+            renderRAGResponse(data, query);
+        } catch (e2) {
+            renderError(err.message);
         }
-        renderError(customMessage);
     }
 }
 

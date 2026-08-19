@@ -1,12 +1,15 @@
+import os
 import sys
 import time
+import json
 import logging
+import collections
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 from fastapi import FastAPI, HTTPException, status, UploadFile, File, Form, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 # Resolve project root and ensure it is in sys.path before any local imports
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -19,9 +22,10 @@ if str(_backend_dir) not in sys.path:
 from backend.core.config import settings
 from backend.retrieval.vector_store import NumpyVectorStore
 from backend.retrieval.bm25 import BM25Retriever
+from backend.retrieval.normalizer import normalize_query_text
 from backend.generation.mock import MockGenerator
 from backend.generation.sarvam import SarvamGenerator
-from backend.generation.guard import validate_generation
+from backend.generation.guard import validate_generation, check_pre_retrieval_guard
 from backend.voice import get_stt_provider, normalize_voice_query
 
 # Configure logging
@@ -38,7 +42,7 @@ app = FastAPI(
 async def vercel_request_path_normalizer(request: Request, call_next):
     """
     Normalizes Vercel rewritten paths (x-matched-path / x-forwarded-uri)
-    so that FastAPI router matches /api/query, /api/voice, /health, /api/health directly.
+    so that FastAPI router matches /api/query, /api/voice, /api/stream, /health directly.
     """
     matched_path = request.headers.get("x-matched-path") or request.headers.get("x-forwarded-uri")
     if matched_path:
@@ -52,11 +56,33 @@ async def vercel_request_path_normalizer(request: Request, call_next):
         
     return await call_next(request)
 
-# Global index variables
+# Global index variables & singletons
 vector_store = NumpyVectorStore()
 bm25_retriever = BM25Retriever()
+multi_retriever = None
 embedding_gen = None
 _initialized = False
+
+# Generator singletons
+_sarvam_gen = None
+_mock_gen = None
+
+# Safe LRU Cache for intermediate retrieval results (max 256 items)
+_retrieval_cache = collections.OrderedDict()
+MAX_CACHE_SIZE = 256
+
+def get_generator():
+    global _sarvam_gen, _mock_gen
+    provider_name = settings.GENERATION_PROVIDER.lower()
+    if provider_name == "sarvam":
+        if not _sarvam_gen:
+            _sarvam_gen = SarvamGenerator()
+        return _sarvam_gen
+    else:
+        if not _mock_gen:
+            _mock_gen = MockGenerator()
+        return _mock_gen
+
 
 def resolve_index_directory(strategy: str, index_type: str) -> Optional[Path]:
     """
@@ -65,7 +91,6 @@ def resolve_index_directory(strategy: str, index_type: str) -> Optional[Path]:
     """
     target_filenames = ["embeddings.npy"] if index_type == "dense" else ["bm25_index.json", "bm25_index.json.gz"]
     
-    # 1. Direct candidate paths
     candidate_dirs = [
         PROJECT_ROOT / "data" / "indexes" / strategy / index_type,
         Path.cwd() / "data" / "indexes" / strategy / index_type,
@@ -79,7 +104,6 @@ def resolve_index_directory(strategy: str, index_type: str) -> Optional[Path]:
                 logger.info(f"Resolved {index_type} index at: {candidate}")
                 return candidate
             
-    # 2. Recursive fallback search
     search_roots = [PROJECT_ROOT, Path.cwd(), Path("/var/task"), Path(__file__).resolve().parent.parent.parent]
     for root in search_roots:
         if root.exists():
@@ -94,6 +118,7 @@ def resolve_index_directory(strategy: str, index_type: str) -> Optional[Path]:
                 
     logger.error(f"Could not locate {target_filenames} in any candidate or search location.")
     return None
+
 
 def init_rag_resources():
     """Idempotent initialization of RAG indexes, multi-strategy retriever, and embedding model."""
@@ -166,10 +191,10 @@ class QueryRequest(BaseModel):
 
 
 class SourceItem(BaseModel):
-    chunk_id: str
+    chunk_id: Optional[str] = None
     score: float
     preview: Optional[str] = None
-    metadata: Dict[str, Any]
+    metadata: Dict[str, Any] = {}
 
 
 class LatencyDetails(BaseModel):
@@ -207,39 +232,57 @@ class VoiceResponse(BaseModel):
     latency: VoiceLatencyBreakdown
 
 
+# ─── Core Retrieval with In-Memory LRU Cache ────────────────────────────────
+def _retrieve_evidence(query: str, top_k: int = 10) -> tuple:
+    """
+    Executes dynamic retrieval with intermediate LRU caching for repeat queries.
+    Returns (retrieved_chunks, retrieval_method, retrieval_latency_ms).
+    """
+    init_rag_resources()
+    t0 = time.perf_counter()
+    
+    cache_key = (normalize_query_text(query), top_k)
+    if cache_key in _retrieval_cache:
+        _retrieval_cache.move_to_end(cache_key)
+        cached_chunks = _retrieval_cache[cache_key]
+        latency = (time.perf_counter() - t0) * 1000
+        return cached_chunks, "multi_strategy_bm25_rrf_cached", latency
+        
+    retrieval_method = "multi_strategy_bm25_rrf"
+    if multi_retriever and multi_retriever.loaded:
+        retrieved_chunks = multi_retriever.search(query, top_k=top_k)
+        retrieval_method = "multi_strategy_bm25_rrf"
+    elif len(bm25_retriever.chunks) > 0:
+        retrieved_chunks = bm25_retriever.search(query, top_k=top_k)
+        retrieval_method = "bm25"
+    elif embedding_gen is not None:
+        query_emb = embedding_gen.embed_query(query)
+        retrieved_chunks = vector_store.search(query_emb, top_k=top_k)
+        retrieval_method = "dense"
+    else:
+        raise RuntimeError("No retrieval index is loaded on this server instance.")
+        
+    latency = (time.perf_counter() - t0) * 1000
+    
+    # Store in LRU cache
+    _retrieval_cache[cache_key] = retrieved_chunks
+    if len(_retrieval_cache) > MAX_CACHE_SIZE:
+        _retrieval_cache.popitem(last=False)
+        
+    return retrieved_chunks, retrieval_method, latency
+
+
 # ─── Core RAG Pipeline Helper ────────────────────────────────────────────────
 def _execute_rag_pipeline(query: str) -> Dict[str, Any]:
     """
     Core retrieval -> generation -> guard pipeline shared by text and voice.
-    
-    Returns:
-        Dict containing answer, sources, retrieval_latency_ms, generation_latency_ms,
-        provider, guard_triggered, guard_reason.
     """
-    init_rag_resources()
-
     # 1. Retrieval
-    t0 = time.perf_counter()
-    retrieved_chunks = []
-    retrieval_method = "multi_strategy_bm25_rrf"
-
-    if multi_retriever and multi_retriever.loaded:
-        retrieved_chunks = multi_retriever.search(query, top_k=settings.RETRIEVAL_TOP_K)
-        retrieval_method = "multi_strategy_bm25_rrf"
-    elif len(bm25_retriever.chunks) > 0:
-        retrieved_chunks = bm25_retriever.search(query, top_k=settings.RETRIEVAL_TOP_K)
-        retrieval_method = "bm25"
-    elif embedding_gen is not None:
-        query_emb = embedding_gen.embed_query(query)
-        retrieved_chunks = vector_store.search(query_emb, top_k=settings.RETRIEVAL_TOP_K)
-        retrieval_method = "dense"
-    else:
-        raise RuntimeError("No retrieval index is loaded on this server instance.")
-
-    retrieval_latency = (time.perf_counter() - t0) * 1000
+    retrieved_chunks, retrieval_method, retrieval_latency = _retrieve_evidence(
+        query, top_k=settings.RETRIEVAL_TOP_K
+    )
 
     # 2. Fast Pre-Generation Abstention Guard Check
-    from backend.generation.guard import check_pre_retrieval_guard
     pre_guard = check_pre_retrieval_guard(query, retrieved_chunks)
     if pre_guard is not None:
         logger.info(f"[Fast Guard] Abstaining before LLM invocation: {pre_guard['guard_reason']}")
@@ -255,17 +298,9 @@ def _execute_rag_pipeline(query: str) -> Dict[str, Any]:
             "chunks_count": len(retrieved_chunks)
         }
 
-    # 3. Generation Provider Selection
-    provider_name = settings.GENERATION_PROVIDER.lower()
+    # 3. Generation via Singleton Generator
+    generator = get_generator()
     t0 = time.perf_counter()
-
-    if provider_name == "sarvam":
-        if not settings.SARVAM_API_KEY or settings.SARVAM_API_KEY == "your_sarvam_api_key_here":
-            raise ValueError("SARVAM_API_KEY is not configured for production generation.")
-        generator = SarvamGenerator()
-    else:
-        generator = MockGenerator()
-
     candidate_response = generator.generate(query, retrieved_chunks)
 
     # 4. Grounding Guard
@@ -287,7 +322,7 @@ def _execute_rag_pipeline(query: str) -> Dict[str, Any]:
         "retrieval_latency": retrieval_latency,
         "generation_latency": generation_latency,
         "retrieval_method": retrieval_method,
-        "provider": provider_name,
+        "provider": settings.GENERATION_PROVIDER,
         "guard_triggered": guard_triggered,
         "guard_reason": guard_reason,
         "chunks_count": len(retrieved_chunks)
@@ -354,6 +389,88 @@ def handle_query(payload: QueryRequest):
     )
 
 
+@app.post("/api/stream")
+@app.post("/stream")
+@app.post("/api/index.py/api/stream")
+@app.post("/api/index.py/stream")
+def handle_stream(payload: QueryRequest):
+    """
+    Real-time Server-Sent Events (SSE) streaming query endpoint.
+    Retrieves evidence from MSMARCO-XI, starts generation immediately,
+    and streams tokens to frontend with ultra-low Time-To-First-Token (TTFT).
+    """
+    query = payload.query.strip()
+    req_start_time = time.perf_counter()
+    logger.info(f"[Streaming Query] Received query='{query}'")
+
+    if not query:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Query string cannot be empty or whitespace."
+        )
+
+    def sse_event_generator():
+        # 1. Retrieval
+        try:
+            retrieved_chunks, retrieval_method, retrieval_latency = _retrieve_evidence(
+                query, top_k=settings.RETRIEVAL_TOP_K
+            )
+        except Exception as e:
+            logger.error(f"Retrieval error in stream: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            return
+
+        # 2. Pre-Retrieval Abstention Guard
+        pre_guard = check_pre_retrieval_guard(query, retrieved_chunks)
+        if pre_guard is not None:
+            abstain_text = pre_guard["answer"]
+            yield f"data: {json.dumps({'type': 'token', 'delta': abstain_text})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'answer': abstain_text, 'sources': pre_guard.get('sources', []), 'guard_triggered': True, 'guard_reason': pre_guard.get('guard_reason'), 'latency': {'retrieval_ms': retrieval_latency, 'ttft_ms': 0.0, 'total_ms': (time.perf_counter() - req_start_time) * 1000}})}\n\n"
+            return
+
+        # 3. Stream Generation from LLM
+        generator = get_generator()
+        first_token = True
+        ttft_ms = 0.0
+        accumulated_answer = ""
+        final_sources = []
+        gen_start_time = time.perf_counter()
+
+        try:
+            for raw_chunk in generator.generate_stream(query, retrieved_chunks):
+                data = json.loads(raw_chunk)
+                if data.get("type") == "token":
+                    if first_token:
+                        ttft_ms = (time.perf_counter() - gen_start_time) * 1000
+                        first_token = False
+                    delta = data.get("delta", "")
+                    accumulated_answer += delta
+                    yield f"data: {json.dumps({'type': 'token', 'delta': delta, 'ttft_ms': ttft_ms if ttft_ms else None})}\n\n"
+                elif data.get("type") == "done":
+                    accumulated_answer = data.get("answer", accumulated_answer)
+                    final_sources = data.get("sources", [])
+        except Exception as e:
+            logger.error(f"Error during stream generation: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            return
+
+        # 4. Validate Grounding on completed answer
+        candidate_res = {
+            "answer": accumulated_answer,
+            "sources": final_sources,
+            "provider": settings.GENERATION_PROVIDER
+        }
+        validated = validate_generation(query, retrieved_chunks, candidate_res)
+        final_answer = validated["answer"]
+        guard_triggered = validated.get("guard_triggered", False)
+        guard_reason = validated.get("guard_reason")
+        total_latency = (time.perf_counter() - req_start_time) * 1000
+
+        yield f"data: {json.dumps({'type': 'done', 'answer': final_answer, 'sources': validated.get('sources', final_sources), 'guard_triggered': guard_triggered, 'guard_reason': guard_reason, 'latency': {'retrieval_ms': retrieval_latency, 'ttft_ms': ttft_ms, 'generation_ms': (time.perf_counter() - gen_start_time) * 1000, 'total_ms': total_latency}})}\n\n"
+
+    return StreamingResponse(sse_event_generator(), media_type="text/event-stream")
+
+
 @app.post("/api/voice", response_model=VoiceResponse)
 @app.post("/voice", response_model=VoiceResponse)
 @app.post("/api/index.py/api/voice", response_model=VoiceResponse)
@@ -390,7 +507,7 @@ async def handle_voice(
             content={"error": "EMPTY_AUDIO", "message": "Uploaded audio recording is empty (0 bytes)."}
         )
 
-    # 2. Speech-to-Text Transcription
+    # 2. Speech-to-Text Transcription with connection pooling
     try:
         stt_provider = get_stt_provider()
         stt_result = stt_provider.transcribe(
@@ -558,6 +675,9 @@ async def vercel_universal_api_dispatcher(request: Request):
             file = form.get("file")
             lang = form.get("language_code")
             return await handle_voice(file=file, language_code=lang)
+        elif "stream" in target:
+            body = await request.json()
+            return handle_stream(QueryRequest(**body))
         else:
             try:
                 body = await request.json()
@@ -570,9 +690,7 @@ async def vercel_universal_api_dispatcher(request: Request):
 
 
 # ─── Frontend SPA Mount (for local development only) ─────────────────────────
-import os
 if not os.getenv("VERCEL") and not os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
     _frontend_dir = PROJECT_ROOT / "public" if (PROJECT_ROOT / "public").is_dir() else (PROJECT_ROOT / "frontend")
     if _frontend_dir.is_dir():
         app.mount("/static", StaticFiles(directory=str(_frontend_dir), html=True), name="static")
-

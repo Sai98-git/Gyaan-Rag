@@ -1,6 +1,7 @@
 import unicodedata
 import re
 import logging
+import functools
 from typing import List, Dict
 
 logger = logging.getLogger(__name__)
@@ -19,12 +20,15 @@ CROSS_LINGUAL_TERMS: Dict[str, List[str]] = {
     "कृषि": ["agriculture", "farming"],
     "dna": ["डीएनए", "डी.एन.ए."],
     "replication": ["प्रतिकृति", "रेप्लिकेशन"],
+    "protein": ["प्रोटीन"],
+    "प्रोटीन": ["protein"],
     "recycling": ["रीसाइक्लिंग", "पुनर्चक्रण"],
     "electronics": ["इलेक्ट्रॉनिक्स", "इलेक्ट्रॉनिक"],
     "scottsdale": ["स्कॉट्सडेल"]
 }
 
 
+@functools.lru_cache(maxsize=512)
 def normalize_query_text(query: str) -> str:
     """
     Standard text normalization for Indic and Latin queries:
@@ -49,6 +53,7 @@ def tokenize_query(query: str) -> List[str]:
     return [tok for tok in normalized.split() if tok]
 
 
+@functools.lru_cache(maxsize=512)
 def expand_query_bilingual(query: str) -> str:
     """
     Expands query with cross-lingual Indic/English terms to bridge vocabulary differences.

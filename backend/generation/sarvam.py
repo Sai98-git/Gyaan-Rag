@@ -1,7 +1,8 @@
 import re
+import json
 import logging
 import requests
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Generator
 from backend.core.config import settings
 from backend.generation.base import BaseGenerator
 from backend.generation.context import format_context
@@ -9,6 +10,9 @@ from backend.voice.retry import execute_with_retry
 from backend.generation.guard import is_devanagari, get_localized_abstention
 
 logger = logging.getLogger(__name__)
+
+# Reusable persistent HTTP session for TCP keep-alive and connection pooling
+_session = requests.Session()
 
 SYSTEM_PROMPT_HI = """आप एक भारतीय ज्ञानकोष के लिए सटीक प्रश्न-उत्तर प्रणाली हैं।
 नियम:
@@ -27,8 +31,7 @@ STRICT RULES:
 def sanitize_llm_answer(raw_text: str, is_hindi: bool = False) -> str:
     """
     Strips any chain-of-thought, reasoning steps, preambles, or analysis
-    that an LLM might emit (e.g. '1. Analyze...', 'Looking at SOURCE...', 'Draft:...').
-    Returns only the direct factual answer.
+    that an LLM might emit. Returns only the direct factual answer.
     """
     text = raw_text.strip()
     
@@ -63,15 +66,12 @@ def sanitize_llm_answer(raw_text: str, is_hindi: bool = False) -> str:
 
 class SarvamGenerator(BaseGenerator):
     """
-    Adapter for Sarvam AI Chat Completions API.
-    
-    Leverages conversational models (e.g. sarvam-105b-conversations) to produce
-    ultra-fast, direct grounded answers without chain-of-thought reasoning overhead.
+    Adapter for Sarvam AI Chat Completions API with persistent connection pooling
+    and low-latency Server-Sent Events (SSE) token streaming.
     """
     
     def __init__(self):
         self.api_key = settings.SARVAM_API_KEY
-        # Use conversational model if configured, or map 105b to conversations for clean output
         model_name = settings.SARVAM_MODEL or "sarvam-105b-conversations"
         if model_name == "sarvam-105b":
             model_name = "sarvam-105b-conversations"
@@ -82,16 +82,10 @@ class SarvamGenerator(BaseGenerator):
         if not self.api_key or self.api_key == "your_sarvam_api_key_here":
             logger.warning("Sarvam API key is missing or not configured in environment variables.")
 
-    def generate(self, query: str, context: List[Dict[str, Any]]) -> Dict[str, Any]:
-        logger.info(f"Invoking Sarvam AI Chat completions with model '{self.model}'...")
-        
-        if not self.api_key or self.api_key == "your_sarvam_api_key_here":
-            raise ValueError("Sarvam API key is missing. Please set SARVAM_API_KEY in your environment.")
-            
+    def _prepare_payload(self, query: str, context: List[Dict[str, Any]], stream: bool = False) -> tuple:
         is_hi = is_devanagari(query)
         system_prompt = SYSTEM_PROMPT_HI if is_hi else SYSTEM_PROMPT_EN
         
-        # Format the context block
         formatted_context = format_context(context)
         user_prompt = f"CONTEXT:\n{formatted_context}\n\nUSER QUERY:\n{query}"
         
@@ -107,11 +101,19 @@ class SarvamGenerator(BaseGenerator):
                 {"role": "user", "content": user_prompt}
             ],
             "temperature": 0.0,
-            "max_tokens": 200
+            "max_tokens": 200,
+            "stream": stream
         }
+        return headers, payload, is_hi
+
+    def generate(self, query: str, context: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if not self.api_key or self.api_key == "your_sarvam_api_key_here":
+            raise ValueError("Sarvam API key is missing. Please set SARVAM_API_KEY in your environment.")
+            
+        headers, payload, is_hi = self._prepare_payload(query, context, stream=False)
         
         def _do_request() -> requests.Response:
-            res = requests.post(
+            res = _session.post(
                 self.base_url,
                 json=payload,
                 headers=headers,
@@ -124,8 +126,8 @@ class SarvamGenerator(BaseGenerator):
             response = execute_with_retry(
                 _do_request,
                 max_retries=2,
-                initial_delay=0.5,
-                backoff_factor=2.0,
+                initial_delay=0.3,
+                backoff_factor=1.5,
                 operation_name="Sarvam Chat Completion"
             )
             res_data = response.json()
@@ -140,9 +142,9 @@ class SarvamGenerator(BaseGenerator):
             sources = []
             for chunk in context:
                 sources.append({
-                    "chunk_id": chunk["chunk_id"],
+                    "chunk_id": chunk.get("chunk_id"),
                     "score": chunk.get("score", 0.0),
-                    "preview": chunk.get("text", "")[:200].strip(),
+                    "preview": str(chunk.get("text") or "")[:200].strip(),
                     "metadata": chunk.get("metadata", {})
                 })
                 
@@ -161,3 +163,76 @@ class SarvamGenerator(BaseGenerator):
         except Exception as e:
             logger.error(f"Unexpected error during generation: {e}")
             raise RuntimeError(f"Unexpected generation failure: {e}")
+
+    def generate_stream(self, query: str, context: List[Dict[str, Any]]) -> Generator[str, None, None]:
+        """
+        Streams generated answer tokens progressively using SSE chunks.
+        Yields JSON strings formatted as Server-Sent Events.
+        """
+        if not self.api_key or self.api_key == "your_sarvam_api_key_here":
+            abstain_msg = get_localized_abstention(query)
+            yield json.dumps({"type": "token", "delta": abstain_msg})
+            yield json.dumps({"type": "done", "answer": abstain_msg, "sources": []})
+            return
+
+        headers, payload, is_hi = self._prepare_payload(query, context, stream=True)
+        
+        sources = []
+        for chunk in context:
+            sources.append({
+                "chunk_id": chunk.get("chunk_id"),
+                "score": chunk.get("score", 0.0),
+                "preview": str(chunk.get("text") or "")[:200].strip(),
+                "metadata": chunk.get("metadata", {})
+            })
+
+        accumulated_chunks = []
+        
+        try:
+            res = _session.post(
+                self.base_url,
+                json=payload,
+                headers=headers,
+                stream=True,
+                timeout=self.timeout
+            )
+            res.raise_for_status()
+            
+            for line in res.iter_lines():
+                if not line:
+                    continue
+                decoded = line.decode("utf-8")
+                if decoded.startswith("data: "):
+                    data_str = decoded[6:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        data = json.loads(data_str)
+                        choices = data.get("choices", [])
+                        if choices:
+                            delta = choices[0].get("delta", {}).get("content", "")
+                            if delta:
+                                accumulated_chunks.append(delta)
+                                yield json.dumps({"type": "token", "delta": delta})
+                    except Exception:
+                        pass
+                        
+            full_raw = "".join(accumulated_chunks)
+            sanitized = sanitize_llm_answer(full_raw, is_hindi=is_hi)
+            yield json.dumps({
+                "type": "done",
+                "answer": sanitized,
+                "sources": sources,
+                "provider": "sarvam"
+            })
+            
+        except Exception as e:
+            logger.error(f"Streaming error from Sarvam: {e}")
+            fallback_ans = get_localized_abstention(query)
+            yield json.dumps({"type": "token", "delta": fallback_ans})
+            yield json.dumps({
+                "type": "done",
+                "answer": fallback_ans,
+                "sources": sources,
+                "provider": "sarvam"
+            })

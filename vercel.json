@@ -17,6 +17,14 @@
       "destination": "/api/index.py"
     },
     {
+      "source": "/api/stream",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/stream",
+      "destination": "/api/index.py"
+    },
+    {
       "source": "/api/voice",
       "destination": "/api/index.py"
     },

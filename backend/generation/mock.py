@@ -1,4 +1,5 @@
 import time
+import json
 import logging
 from typing import List, Dict, Any
 from backend.generation.base import BaseGenerator
@@ -66,4 +67,18 @@ class MockGenerator(BaseGenerator):
             "sources": sources_list,
             "provider": "mock",
         }
+
+    def generate_stream(self, query: str, context: List[Dict[str, Any]]) -> Any:
+        res = self.generate(query, context)
+        words = res["answer"].split(" ")
+        for i, word in enumerate(words):
+            token = word + (" " if i < len(words) - 1 else "")
+            yield json.dumps({"type": "token", "delta": token})
+            time.sleep(0.01)
+        yield json.dumps({
+            "type": "done",
+            "answer": res["answer"],
+            "sources": res["sources"],
+            "provider": "mock"
+        })
 

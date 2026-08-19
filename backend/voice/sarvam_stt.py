@@ -8,6 +8,10 @@ from backend.voice.retry import execute_with_retry
 
 logger = logging.getLogger(__name__)
 
+# Reusable persistent HTTP session for STT connection pooling
+_stt_session = requests.Session()
+
+
 
 def normalize_audio_mime(mime_type: str, filename: str, audio_bytes: bytes) -> Tuple[str, str]:
     """
@@ -110,7 +114,7 @@ class SarvamSTTProvider(BaseSTTProvider):
         )
 
         def _do_request() -> requests.Response:
-            res = requests.post(
+            res = _stt_session.post(
                 self.base_url,
                 headers=headers,
                 files=files,
