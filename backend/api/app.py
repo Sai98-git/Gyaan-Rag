@@ -108,20 +108,6 @@ def init_rag_resources():
     dense_dir = resolve_index_directory(strategy, "dense")
     bm25_dir  = resolve_index_directory(strategy, "bm25")
 
-    # Load dense index
-    index_ok = False
-    if dense_dir:
-        index_ok = vector_store.load(str(dense_dir))
-    if not index_ok:
-        logger.warning(f"Dense index could not be loaded from '{dense_dir}'.")
-
-    # Load BM25 index
-    bm25_ok = False
-    if bm25_dir:
-        bm25_ok = bm25_retriever.load(str(bm25_dir))
-    if not bm25_ok:
-        logger.warning(f"BM25 index could not be loaded from '{bm25_dir}'.")
-
     # Load Multi-Strategy Retriever (semantic, sliding_window, passage)
     is_serverless = bool(os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME"))
     try:
@@ -135,12 +121,23 @@ def init_rag_resources():
                     break
         multi_retriever = MultiStrategyRetriever(str(indexes_base))
         multi_retriever.load(load_dense=not is_serverless)
+        if strategy in multi_retriever.bm25_retrievers:
+            bm25_retriever = multi_retriever.bm25_retrievers[strategy]
+        if strategy in multi_retriever.vector_stores:
+            vector_store = multi_retriever.vector_stores[strategy]
         logger.info(f"MultiStrategyRetriever loaded with {multi_retriever.total_chunks} total chunks across strategies.")
     except Exception as e:
         logger.warning(f"Could not initialize MultiStrategyRetriever: {e}")
 
+    # Fallback to single index loading if multi_retriever is not loaded
+    if not (multi_retriever and multi_retriever.loaded) and not is_serverless:
+        if dense_dir:
+            vector_store.load(str(dense_dir))
+        if bm25_dir:
+            bm25_retriever.load(str(bm25_dir))
+
     # Attempt to load embedding model (local dev / GPU environments only)
-    if index_ok and not is_serverless:
+    if not is_serverless and vector_store.embeddings.size > 0:
         try:
             from backend.retrieval.embeddings import get_embedding_generator
             embedding_gen = get_embedding_generator()
