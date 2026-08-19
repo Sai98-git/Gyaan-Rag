@@ -123,6 +123,7 @@ def init_rag_resources():
         logger.warning(f"BM25 index could not be loaded from '{bm25_dir}'.")
 
     # Load Multi-Strategy Retriever (semantic, sliding_window, passage)
+    is_serverless = bool(os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME"))
     try:
         from backend.retrieval.multi_strategy import MultiStrategyRetriever
         indexes_base = PROJECT_ROOT / "data" / "indexes"
@@ -133,13 +134,13 @@ def init_rag_resources():
                     indexes_base = cand
                     break
         multi_retriever = MultiStrategyRetriever(str(indexes_base))
-        multi_retriever.load()
+        multi_retriever.load(load_dense=not is_serverless)
         logger.info(f"MultiStrategyRetriever loaded with {multi_retriever.total_chunks} total chunks across strategies.")
     except Exception as e:
         logger.warning(f"Could not initialize MultiStrategyRetriever: {e}")
 
     # Attempt to load embedding model (local dev / GPU environments only)
-    if index_ok:
+    if index_ok and not is_serverless:
         try:
             from backend.retrieval.embeddings import get_embedding_generator
             embedding_gen = get_embedding_generator()
