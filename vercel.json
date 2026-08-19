@@ -31,7 +31,9 @@
   ],
   "functions": {
     "api/index.py": {
-      "includeFiles": "backend/**,data/**"
+      "includeFiles": "backend/**,data/indexes/semantic/**",
+      "memory": 1024,
+      "maxDuration": 30
     }
   }
 }
